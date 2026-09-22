@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""Project-specific structural lint inspired by the supplied Clean Code heuristics.
-
-This complements Ruff with checks that are specific to this refactor: no runtime package
-installation, no blanket warning suppression, correct method binding, bounded line length,
-and review warnings for broad exceptions, large functions, and parameter-heavy APIs.
-"""
-
-from __future__ import annotations
-
 import ast
 import builtins
 import symtable
