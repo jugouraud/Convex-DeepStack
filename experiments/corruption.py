@@ -1,7 +1,7 @@
 import numpy as np
 
-from .utils import as_2d_column
 from .data_config import SignedShiftCorruptionConfig, WassersteinOutlierConfig
+from .utils import as_2d_column
 
 
 def _load_optimal_transport():
