@@ -798,3 +798,304 @@ def build_optimal_model(
         if max_blocks is not None and len(prediction_log) >= max_blocks:
             if verbose:
                 print(f"[Stop] reached max_blocks={max_blocks} accepted blocks.")
+
+            break
+
+        block_idx += 1
+        if verbose:
+            print(f"\n\n======== Evaluating block {block_idx} ========\n")
+
+        residual_data = ResidualSearchData(
+            x_train=X_tr,
+            y_train=y_tr,
+            x_val=X_val,
+            y_val=y_val,
+            y_train_previous=y_tr_prev,
+            y_val_previous=y_val_prev,
+        )
+        tpe_result = self._tpe_search_early_exit(
+            residual_data,
+            config.early_exit_for_block(block_idx),
+        )
+
+        best_params = tpe_result["best_params"]
+        best_search_loss = float(tpe_result["best_search_loss"])
+        best_model = tpe_result["best_model"]
+
+        if best_model is None or best_params is None or not np.isfinite(best_search_loss):
+            if verbose:
+                print("[Stop] no finite residual-search result from TPE.")
+            history["blocks"].append({
+                **self._make_history_entry(
+                    block_idx, best_params, best_search_loss, None, None,
+                    val_mse_after=None, added=False,
+                    stop_reason="non_finite_or_missing_search_result",
+                ),
+                "best_search_loss": best_search_loss,
+                "weighted_val_mse": None,
+                "early_exit_trace": tpe_result.get("early_exit_trace", []),
+                "trial_records": tpe_result.get("trial_records", []),
+                "sampler_settings": tpe_result.get("sampler_settings", {}),
+            })
+            break
+
+        block_type = best_params.get("block_type", None)
+
+
+        if block_type in ("wadiro", "scnn"):
+            torch_block = best_model.get_torch_model()
+            torch_block.eval()
+            model_dtype, model_device = self._get_torch_dtype_device(torch_block)
+
+            X_tr_aug, X_val_aug = self._augment_inputs(
+                X_tr, X_val, y_tr_prev, y_val_prev, use_aug=True
+            )
+            rhat_tr = self._ensure_2d(
+                self._predict_torch_on_numpy(torch_block, X_tr_aug, model_dtype, model_device)
+            )
+            rhat_val = self._ensure_2d(
+                self._predict_torch_on_numpy(torch_block, X_val_aug, model_dtype, model_device)
+            )
+
+        else:
+            if verbose:
+                print(f"[Stop] unknown block_type={block_type}.")
+            history["blocks"].append({
+                **self._make_history_entry(
+                    block_idx, best_params, best_search_loss, None, None,
+                    val_mse_after=None, added=False,
+                    stop_reason="unknown_block_type",
+                ),
+                "best_search_loss": best_search_loss,
+                "weighted_val_mse": None,
+                "early_exit_trace": tpe_result.get("early_exit_trace", []),
+                "trial_records": tpe_result.get("trial_records", []),
+                "sampler_settings": tpe_result.get("sampler_settings", {}),
+            })
+            break
+
+        if not (np.isfinite(rhat_tr).all() and np.isfinite(rhat_val).all()):
+            if verbose:
+                print("[Stop] non-finite predictions from selected block.")
+            history["blocks"].append({
+                **self._make_history_entry(
+                    block_idx, best_params, best_search_loss, None, None,
+                    val_mse_after=None, added=False,
+                    stop_reason="non_finite_predictions",
+                ),
+                "best_search_loss": best_search_loss,
+                "weighted_val_mse": None,
+                "early_exit_trace": tpe_result.get("early_exit_trace", []),
+                "trial_records": tpe_result.get("trial_records", []),
+                "sampler_settings": tpe_result.get("sampler_settings", {}),
+            })
+            break
+
+
+        best_gamma, best_weight, y_val_new, weighted_val_mse = self._compute_boosting_weight(
+            rhat_val=rhat_val,
+            y_val=y_val,
+            y_val_prev=y_val_prev,
+            nu=nu,
+        )
+        weighted_val_mse = float(weighted_val_mse)
+
+        if not np.isfinite(weighted_val_mse):
+            if verbose:
+                print("[Stop] non-finite cumulative validation MSE.")
+            history["blocks"].append({
+                **self._make_history_entry(
+                    block_idx, best_params, best_search_loss, best_weight, best_gamma,
+                    val_mse_after=None, added=False,
+                    stop_reason="non_finite_weighted_val_mse",
+                ),
+                "best_search_loss": best_search_loss,
+                "weighted_val_mse": weighted_val_mse,
+                "early_exit_trace": tpe_result.get("early_exit_trace", []),
+                "trial_records": tpe_result.get("trial_records", []),
+                "sampler_settings": tpe_result.get("sampler_settings", {}),
+            })
+            break
+
+        model_val_before = float(best_val_so_far)
+        delta = model_val_before - weighted_val_mse
+        relative_delta = delta / max(abs(model_val_before), 1e-12)
+        accepted_before = len(prediction_log)
+        if verbose:
+            print(
+                f"[Block {block_idx}] finished | "
+                f"residual_loss={best_search_loss:.6f} | "
+                f"weight={best_weight:.6g} | "
+                f"new_ensemble_loss={weighted_val_mse:.6f} | "
+                f"relative_improvement={relative_delta:.6g}"
+            )
+
+        if weighted_val_mse > model_val_before + 1e-10:
+            if verbose:
+                print("[Stop] candidate would increase cumulative loss.")
+            history["blocks"].append({
+                "block_idx": block_idx,
+                "best_params": best_params,
+                "best_val": model_val_before,
+                "residual_search_loss": best_search_loss,
+                "best_search_loss": best_search_loss,
+                "model_val_mse_before": model_val_before,
+                "model_val_mse_after_candidate": weighted_val_mse,
+                "model_val_mse_after": model_val_before,
+                "weighted_val_mse": weighted_val_mse,
+                "absolute_improvement": delta,
+                "relative_improvement": relative_delta,
+                "improvement_tol": improvement_tol,
+                "accepted_blocks_before_candidate": accepted_before,
+                "best_weight": best_weight,
+                "best_gamma": best_gamma,
+                "added": False,
+                "stop_reason": "would_increase_model_val_mse",
+                "early_exit_trace": tpe_result.get("early_exit_trace", []),
+                "trial_records": tpe_result.get("trial_records", []),
+                "sampler_settings": tpe_result.get("sampler_settings", {}),
+            })
+            break
+
+
+
+
+        meets_improvement_tol = bool(relative_delta > improvement_tol)
+
+
+        self.add_block(torch_block, weight=best_weight)
+
+        y_tr_prev = y_tr_prev + best_weight * rhat_tr
+        y_val_prev = y_val_new
+        cur_val_mse = float(np.mean((y_val - y_val_prev) ** 2))
+        best_val_so_far = cur_val_mse
+        prediction_log.append(y_val_prev.copy())
+
+        accepted_after = len(prediction_log)
+        if accepted_after >= min_blocks:
+            if meets_improvement_tol:
+                consecutive_low_improvement = 0
+            else:
+                consecutive_low_improvement += 1
+        else:
+            consecutive_low_improvement = 0
+
+        patience_exhausted = (
+            accepted_after >= min_blocks
+            and consecutive_low_improvement >= block_patience
+        )
+        block_stop_reason = (
+            "block_patience_exhausted" if patience_exhausted else None
+        )
+
+        history["blocks"].append({
+            "block_idx": block_idx,
+            "best_params": best_params,
+            "best_val": cur_val_mse,
+            "residual_search_loss": best_search_loss,
+            "best_search_loss": best_search_loss,
+            "model_val_mse_before": model_val_before,
+            "model_val_mse_after": cur_val_mse,
+            "weighted_val_mse": weighted_val_mse,
+            "absolute_improvement": delta,
+            "relative_improvement": relative_delta,
+            "improvement_tol": improvement_tol,
+            "meets_improvement_tol": meets_improvement_tol,
+            "accepted_blocks_before_candidate": accepted_before,
+            "accepted_blocks_after_candidate": accepted_after,
+            "consecutive_low_improvement": consecutive_low_improvement,
+            "block_patience": block_patience,
+            "best_weight": best_weight,
+            "best_gamma": best_gamma,
+            "added": True,
+            "stop_reason": block_stop_reason,
+            "early_exit_trace": tpe_result.get("early_exit_trace", []),
+            "trial_records": tpe_result.get("trial_records", []),
+            "sampler_settings": tpe_result.get("sampler_settings", {}),
+        })
+
+        if verbose:
+            quality = "meaningful" if meets_improvement_tol else "below tolerance"
+            print(
+                f"[Block {block_idx}] accepted ({quality}) | "
+                f"low_improvement_streak={consecutive_low_improvement}/"
+                f"{block_patience}"
+            )
+
+        if patience_exhausted:
+            if verbose:
+                print(
+                    "[Stop] block patience exhausted after "
+                    f"{consecutive_low_improvement} consecutive accepted blocks "
+                    "below the relative-improvement threshold."
+                )
+            break
+
+    history["n_blocks_accepted"] = len(prediction_log)
+    history["n_block_attempts"] = len(history["blocks"])
+    history["min_blocks"] = min_blocks
+    history["block_patience"] = block_patience
+    history["consecutive_low_improvement_at_stop"] = consecutive_low_improvement
+    history["improvement_tol"] = improvement_tol
+    history["stop_reason"] = next(
+        (
+            block.get("stop_reason")
+            for block in reversed(history["blocks"])
+            if block.get("stop_reason")
+        ),
+        "max_blocks"
+        if max_blocks is not None and len(prediction_log) >= max_blocks
+        else None,
+    )
+
+    if verbose:
+        print(
+            f"[Done] accepted_blocks={history['n_blocks_accepted']} | "
+            f"attempts={history['n_block_attempts']} | "
+            f"stop_reason={history['stop_reason']}"
+        )
+
+    self.train_history = history
+    return history
+
+
+class ConvexDeepStack(nn.Module):
+
+    def __init__(self, in_dim_x: int, out_dim: int):
+        """Initialize an empty ConvexDeepStack model.
+
+        Args:
+            in_dim_x (int): Number of input features.
+            out_dim (int): Number of output dimensions.
+
+        Returns:
+            None: Initializes the model in place.
+        """
+        super().__init__()
+        self.in_dim_x = in_dim_x
+        self.out_dim = out_dim
+        self.blocks = nn.ModuleList()
+        self.weights = nn.ParameterList()
+
+    @staticmethod
+    def _ensure_2d(array) -> np.ndarray:
+        """Convert an array-like object to an array with an explicit output dimension.
+
+        Args:
+            array (ArrayLike): Input values to reshape when one-dimensional.
+
+        Returns:
+            numpy.ndarray: Array with at least two dimensions.
+        """
+        array = np.asarray(array)
+        return array.reshape(-1, 1) if array.ndim == 1 else array
+
+    @staticmethod
+    def _get_torch_dtype_device(torch_model: nn.Module):
+        """Determine the dtype and device used by a PyTorch module.
+
+        Args:
+            torch_model (torch.nn.Module): PyTorch module to inspect.
+
+        Returns:
+            tuple[torch.dtype, torch.device]: Module dtype and device, with CPU defaults
