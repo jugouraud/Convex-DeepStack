@@ -1099,3 +1099,223 @@ class ConvexDeepStack(nn.Module):
 
         Returns:
             tuple[torch.dtype, torch.device]: Module dtype and device, with CPU defaults
+
+            when parameterless.
+        """
+        try:
+            parameter = next(torch_model.parameters())
+        except StopIteration:
+            return torch.get_default_dtype(), torch.device("cpu")
+        return parameter.dtype, parameter.device
+
+    @staticmethod
+    def _predict_torch_on_numpy(torch_model, x_numpy, dtype, device) -> np.ndarray:
+        """Evaluate a PyTorch model on NumPy inputs and return NumPy predictions.
+
+        Args:
+            torch_model (torch.nn.Module): PyTorch model to evaluate.
+            x_numpy (numpy.ndarray): Input feature matrix.
+            dtype (torch.dtype): Tensor dtype used for evaluation.
+            device (torch.device): Device used for evaluation.
+
+        Returns:
+            numpy.ndarray: Model predictions converted to NumPy.
+        """
+        with torch.no_grad():
+            x_tensor = torch.from_numpy(x_numpy).to(dtype=dtype, device=device)
+            return torch_model(x_tensor).cpu().numpy()
+
+    @staticmethod
+    def _compute_boosting_weight(rhat_val, y_val, y_val_prev, nu):
+        """Compute the residual line-search coefficient and updated validation prediction.
+
+        Args:
+            rhat_val (numpy.ndarray): Candidate residual predictions on validation data.
+            y_val (numpy.ndarray): Validation targets.
+            y_val_prev (numpy.ndarray): Current ensemble predictions on validation data.
+            nu (float): Shrinkage factor applied to the line-search coefficient.
+
+        Returns:
+            tuple[float, float, numpy.ndarray, float]: Line-search coefficient, block weight,
+            updated predictions, and validation MSE.
+        """
+        validation_residual = ConvexDeepStack._ensure_2d(y_val - y_val_prev)
+        residual_prediction = ConvexDeepStack._ensure_2d(rhat_val)
+        numerator = float(np.sum(validation_residual * residual_prediction))
+        denominator = float(np.sum(residual_prediction * residual_prediction) + 1e-12)
+        gamma = numerator / denominator
+        weight = nu * gamma
+        y_val_new = ConvexDeepStack._ensure_2d(y_val_prev) + weight * residual_prediction
+        validation_loss = float(np.mean((y_val - y_val_new) ** 2))
+        return gamma, weight, y_val_new, validation_loss
+
+    @staticmethod
+    def _make_history_entry(
+        block_idx,
+        best_params,
+        best_val,
+        best_weight,
+        best_gamma,
+        val_mse_after,
+        added,
+        stop_reason,
+    ) -> dict:
+        """Create a normalized history record for one candidate block.
+
+        Args:
+            block_idx (int): One-based candidate block index.
+            best_params (dict[str, Any] | None): Selected hyperparameters.
+            best_val (float | None): Recorded validation value.
+            best_weight (float | None): Selected block weight.
+            best_gamma (float | None): Unshrunk line-search coefficient.
+            val_mse_after (float | None): Validation MSE after the candidate.
+            added (bool): Whether the candidate was added to the stack.
+            stop_reason (str | None): Reason for stopping, when applicable.
+
+        Returns:
+            dict[str, Any]: Normalized block-history record.
+        """
+        return {
+            "block_idx": block_idx,
+            "best_params": best_params,
+            "best_val": best_val,
+            "best_weight": best_weight,
+            "best_gamma": best_gamma,
+            "val_mse_after": val_mse_after,
+            "added": added,
+            "stop_reason": stop_reason,
+        }
+
+    def _augment_inputs(self, x_train, x_val, y_train_prev, y_val_prev, use_aug):
+        """Optionally append current ensemble predictions to training and validation features.
+
+        Args:
+            x_train (numpy.ndarray): Training feature matrix.
+            x_val (numpy.ndarray): Validation feature matrix.
+            y_train_prev (numpy.ndarray): Current ensemble predictions on training data.
+            y_val_prev (numpy.ndarray): Current ensemble predictions on validation data.
+            use_aug (bool): Whether to append current predictions to the features.
+
+        Returns:
+            tuple[numpy.ndarray, numpy.ndarray]: Training and validation feature matrices
+            after optional augmentation.
+        """
+        if not use_aug:
+            return x_train, x_val
+        return (
+            self._data_augmenter(x_train, y_train_prev),
+            self._data_augmenter(x_val, y_val_prev),
+        )
+
+    @staticmethod
+    def _data_augmenter(x, y):
+        """Append prediction values while preserving the feature array representation.
+
+        Args:
+            x (numpy.ndarray | torch.Tensor): Feature matrix.
+            y (numpy.ndarray | torch.Tensor): Prediction values to append.
+
+        Returns:
+            numpy.ndarray | torch.Tensor: Feature matrix with appended prediction values.
+        """
+        if isinstance(x, np.ndarray):
+            if isinstance(y, torch.Tensor):
+                y = y.detach().cpu().numpy()
+            return np.concatenate([x, y], axis=1)
+        if isinstance(x, torch.Tensor):
+            if isinstance(y, np.ndarray):
+                y = torch.from_numpy(y).to(device=x.device, dtype=x.dtype)
+            return torch.cat([x, y], dim=1)
+        raise TypeError("x must be a torch.Tensor or numpy.ndarray")
+
+    def add_block(
+        self,
+        pretrained_block: nn.Module,
+        weight: float | torch.Tensor = 1.0,
+    ) -> None:
+        """Append a pretrained residual block with a fixed ensemble weight.
+
+        Args:
+            pretrained_block (torch.nn.Module): Residual-prediction block to append.
+            weight (float | torch.Tensor): Fixed additive weight assigned to the block.
+
+        Returns:
+            None: Updates the model in place.
+        """
+        self.blocks.append(pretrained_block)
+        if not isinstance(weight, torch.Tensor):
+            weight = torch.tensor(weight, dtype=torch.float32)
+        parameter = nn.Parameter(weight.reshape(()).to(torch.float32), requires_grad=False)
+        self.weights.append(parameter)
+
+    def set_block_weight(self, idx: int, new_weight: float | torch.Tensor) -> None:
+        """Replace the fixed additive weight of one residual block.
+
+        Args:
+            idx (int): Index of the block weight to replace.
+            new_weight (float | torch.Tensor): New fixed additive weight.
+
+        Returns:
+            None: Updates the selected weight in place.
+        """
+        if not isinstance(new_weight, torch.Tensor):
+            new_weight = torch.tensor(new_weight, dtype=torch.float32)
+        with torch.no_grad():
+            self.weights[idx].copy_(new_weight.reshape(()).to(torch.float32))
+
+    def get_block_weight(self, idx: int) -> torch.Tensor:
+        """Return a detached copy of one residual-block weight.
+
+        Args:
+            idx (int): Index of the block weight to retrieve.
+
+        Returns:
+            torch.Tensor: Detached scalar block weight.
+        """
+        return self.weights[idx].detach()
+
+    def forward(self, x: torch.Tensor, return_all: bool = False):
+        """Evaluate the additive residual stack on an input batch.
+
+        Args:
+            x (torch.Tensor): Input feature batch.
+            return_all (bool): Whether to return predictions after every accepted block.
+
+        Returns:
+            torch.Tensor | list[torch.Tensor]: Final prediction or intermediate predictions
+            for all blocks.
+        """
+        batch_size = x.size(0)
+        device, dtype = x.device, x.dtype
+        ensemble_prediction = torch.zeros(
+            batch_size,
+            self.out_dim,
+            dtype=dtype,
+            device=device,
+        )
+        intermediate_predictions = []
+
+        for block_index, block in enumerate(self.blocks):
+            augmented_input = torch.cat([x, ensemble_prediction], dim=1)
+            residual_prediction = block(augmented_input)
+
+            if residual_prediction.dim() == 1:
+                residual_prediction = residual_prediction.view(batch_size, self.out_dim)
+            elif residual_prediction.size(-1) != self.out_dim:
+                shape = tuple(residual_prediction.shape)
+                raise RuntimeError(
+                    f"Block {block_index} returned {shape}; expected last dim={self.out_dim}"
+                )
+
+            weight = self.weights[block_index].to(device=device, dtype=dtype)
+            ensemble_prediction = ensemble_prediction + weight * residual_prediction
+            if return_all:
+                intermediate_predictions.append(ensemble_prediction.clone())
+
+        return intermediate_predictions if return_all else ensemble_prediction
+
+
+ConvexDeepStack._suggest_params_optuna = staticmethod(_suggest_params_optuna)
+ConvexDeepStack._objective_building_full = _objective_building_full
+ConvexDeepStack._tpe_search_early_exit = _tpe_search_early_exit
+ConvexDeepStack.build_optimal_model = build_optimal_model
