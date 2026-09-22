@@ -3,6 +3,7 @@ import torch
 
 from .utils import DEVICE
 
+
 def torch_predict(model, X, batch_size=128, device=None):
     model.eval()
     try:
