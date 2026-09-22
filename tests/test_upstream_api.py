@@ -1,5 +1,3 @@
-"""Compatibility tests for constructors provided by the upstream dependency."""
-
 import wadiroscnn
 
 from convex_deepstack.models import scnn, wadiro_scnn
