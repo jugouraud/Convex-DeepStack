@@ -1,5 +1,3 @@
-"""Smoke tests for the installable ConvexDeepStack public API."""
-
 import torch
 
 import convex_deepstack
