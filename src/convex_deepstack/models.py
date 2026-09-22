@@ -498,3 +498,303 @@ def _tpe_search_early_exit(
     study = optuna.create_study(direction="minimize", sampler=sampler)
 
     FAIL_THRESHOLD = 1e11
+
+    def conformal_upper_quantile(values, alpha_level):
+        """Compute the finite-sample conformal upper quantile of observed losses.
+
+        Args:
+            values (Iterable[float]): Observed loss values.
+            alpha_level (float): Miscoverage level used to select the upper quantile.
+
+        Returns:
+            float: Selected conformal upper quantile.
+        """
+        vals = sorted(float(v) for v in values)
+        n = len(vals)
+        if n == 0:
+            return np.inf
+        idx = int(math.ceil((n + 1) * (1.0 - alpha_level))) - 1
+        idx = max(0, min(idx, n - 1))
+        return vals[idx]
+
+    losses_valid = []
+    new_best_flags = []
+    incumbent_loss = None
+
+    U_warm = None
+    alpha_t = float(alpha)
+    alpha_changes = []
+
+    exploitation_mode = False
+    stop_counter = 0
+    early_exit_trace = []
+    trial_records = []
+
+    progress = (
+        tqdm(total=max_evals, desc="Optuna TPE trials", unit="trial", leave=True)
+        if (tqdm is not None and verbose)
+        else None
+    )
+
+
+    for t in range(1, max_evals + 1):
+        trial = study.ask()
+        params = self._suggest_params_optuna(trial)
+        result = evaluate_candidate(params)
+
+        loss_t = float(result.get("loss", np.inf))
+        if not np.isfinite(loss_t):
+            loss_t = 1e12
+
+
+        study.tell(trial, loss_t)
+
+        trial_records.append({
+            "trial": t,
+            "number": trial.number,
+            "params": params,
+            "loss": loss_t,
+            "status": result.get("status"),
+            "reason": result.get("reason"),
+            "exception": result.get("exception"),
+        })
+
+        if progress is not None:
+            progress.update(1)
+            if np.isfinite(best_holder["search_loss"]):
+                progress.set_postfix(best=f"{best_holder['search_loss']:.6g}")
+
+        is_valid = np.isfinite(loss_t) and loss_t < FAIL_THRESHOLD
+        if not is_valid:
+            continue
+
+
+        if incumbent_loss is None:
+            is_new_best = 1
+            incumbent_loss = loss_t
+        else:
+            is_new_best = int(loss_t < incumbent_loss)
+            incumbent_loss = min(incumbent_loss, loss_t)
+
+        losses_valid.append(loss_t)
+        new_best_flags.append(is_new_best)
+
+        if len(losses_valid) < warmup:
+            early_exit_trace.append({
+                "trial": t,
+                "loss": loss_t,
+                "phase": "warmup",
+                "U_warm": U_warm,
+                "q_hat": None,
+                "alpha_t": alpha_t,
+                "e_t": None,
+                "d_t": None,
+                "p_good": None,
+                "p_newbest": None,
+                "exploitation_mode": False,
+                "stop_counter": stop_counter,
+            })
+            continue
+
+        if U_warm is None:
+            U_warm = conformal_upper_quantile(losses_valid[:warmup], alpha)
+            early_exit_trace.append({
+                "trial": t,
+                "loss": loss_t,
+                "phase": "warmup_complete",
+                "U_warm": U_warm,
+                "q_hat": None,
+                "alpha_t": alpha_t,
+                "e_t": None,
+                "d_t": None,
+                "p_good": None,
+                "p_newbest": None,
+                "exploitation_mode": False,
+                "stop_counter": stop_counter,
+            })
+            continue
+
+        e_t = int(loss_t > U_warm)
+
+        alpha_old = alpha_t
+        alpha_t = alpha_t + gamma * (alpha - e_t)
+        alpha_t = float(np.clip(alpha_t, 1e-6, 1.0 - 1e-6))
+
+
+        d_t = abs(alpha_t - alpha_old)
+        alpha_changes.append(d_t)
+
+
+        if len(alpha_changes) >= stability_window:
+            recent_deltas = alpha_changes[-stability_window:]
+            exploitation_mode = all(d <= eps_stab for d in recent_deltas)
+        else:
+            exploitation_mode = False
+
+        q_hat = None
+        p_good = None
+        p_newbest = None
+        phase = "exploitation" if exploitation_mode else "exploration"
+
+        if exploitation_mode:
+            post_warmup_losses = losses_valid[warmup:]
+            post_warmup_flags = new_best_flags[warmup:]
+
+            if recent_window is not None:
+                window_losses = post_warmup_losses[-recent_window:]
+                window_flags = post_warmup_flags[-recent_window:]
+            else:
+                window_losses = post_warmup_losses
+                window_flags = post_warmup_flags
+
+            if len(window_losses) > 0:
+
+                q_hat = conformal_upper_quantile(window_losses, alpha)
+
+                p_good = float(np.mean([L <= U_warm for L in window_losses]))
+                p_newbest = float(np.mean(window_flags))
+
+                cond_good = p_good >= alpha_consistency
+                cond_rare = p_newbest <= alpha_rarity
+
+                if cond_good and cond_rare:
+                    stop_counter += 1
+                else:
+                    stop_counter = 0
+
+                if stop_counter >= k_stop:
+                    early_exit_trace.append({
+                        "trial": t,
+                        "loss": loss_t,
+                        "phase": phase,
+                        "U_warm": U_warm,
+                        "q_hat": q_hat,
+                        "alpha_t": alpha_t,
+                        "e_t": e_t,
+                        "d_t": d_t,
+                        "p_good": p_good,
+                        "p_newbest": p_newbest,
+                        "exploitation_mode": exploitation_mode,
+                        "stop_counter": stop_counter,
+                        "stopped": True,
+                    })
+                    break
+
+        early_exit_trace.append({
+            "trial": t,
+            "loss": loss_t,
+            "phase": phase,
+            "U_warm": U_warm,
+            "q_hat": q_hat,
+            "alpha_t": alpha_t,
+            "e_t": e_t,
+            "d_t": d_t,
+            "p_good": p_good,
+            "p_newbest": p_newbest,
+            "exploitation_mode": exploitation_mode,
+            "stop_counter": stop_counter,
+            "stopped": False,
+        })
+
+    if progress is not None:
+        progress.close()
+
+    sampler_settings = {
+        "sampler": "Optuna TPESampler",
+        "multivariate": bool(optuna_multivariate),
+        "group": bool(optuna_group),
+        "n_startup_trials": n_startup_trials,
+        "conformal_warmup": warmup,
+        "warn_independent_sampling": bool(optuna_warn_independent_sampling),
+        "seed": seed,
+    }
+
+    return {
+        "best_model": best_holder["model"],
+        "best_search_loss": best_holder["search_loss"],
+        "best_params": best_holder["params"],
+        "study": study,
+        "trials": study,
+        "trial_records": trial_records,
+        "early_exit_trace": early_exit_trace,
+        "sampler_settings": sampler_settings,
+    }
+
+
+def build_optimal_model(
+    self,
+    X_tr,
+    y_tr,
+    X_val,
+    y_val,
+    config: DeepStackConfig | None = None,
+):
+    """Construct the residual stack by searching, weighting, and accepting candidate blocks.
+
+    Args:
+        self (ConvexDeepStack): Model whose residual stack is constructed.
+        X_tr (numpy.ndarray): Training feature matrix.
+        y_tr (numpy.ndarray): Training targets.
+        X_val (numpy.ndarray): Validation feature matrix.
+        y_val (numpy.ndarray): Validation targets.
+        config (DeepStackConfig | None): Stack-construction configuration, or None for defaults.
+
+    Returns:
+        dict[str, Any]: Training history and stopping information for the constructed stack.
+    """
+    config = DeepStackConfig() if config is None else config
+    nu = config.nu
+    improvement_tol = config.improvement_tol
+    min_blocks = config.min_blocks
+    block_patience = config.block_patience
+    max_blocks = config.max_blocks
+    verbose = config.verbose
+    optuna_multivariate = config.optuna_multivariate
+    optuna_group = config.optuna_group
+    optuna_n_startup_trials = config.optuna_n_startup_trials
+    optuna_min_startup_trials = config.optuna_min_startup_trials
+
+    y_tr = self._ensure_2d(y_tr).astype(np.float64)
+    y_val = self._ensure_2d(y_val).astype(np.float64)
+
+    min_blocks = max(1, int(min_blocks))
+    block_patience = max(1, int(block_patience))
+    improvement_tol = max(0.0, float(improvement_tol))
+    if max_blocks is not None:
+        max_blocks = int(max_blocks)
+        if max_blocks < min_blocks:
+            raise ValueError(
+                f"max_blocks={max_blocks} must be >= min_blocks={min_blocks}."
+            )
+
+    y_tr_prev = np.zeros((X_tr.shape[0], 1), dtype=np.float64)
+    y_val_prev = np.zeros((X_val.shape[0], 1), dtype=np.float64)
+
+    prediction_log = []
+    block_idx = 0
+    consecutive_low_improvement = 0
+
+    baseline_val = float(np.mean((y_val - y_val_prev) ** 2))
+    best_val_so_far = baseline_val
+
+    if verbose:
+        print(f"[Start] cumulative_loss={baseline_val:.6f}")
+
+    history = {
+        "baseline_val_mse": baseline_val,
+        "blocks": [],
+        "prediction_log": prediction_log,
+        "block_patience": block_patience,
+        "sampler": {
+            "name": "Optuna TPESampler",
+            "multivariate": bool(optuna_multivariate),
+            "group": bool(optuna_group),
+            "n_startup_trials": optuna_n_startup_trials,
+            "min_startup_trials": optuna_min_startup_trials,
+        },
+    }
+
+    while True:
+        if max_blocks is not None and len(prediction_log) >= max_blocks:
+            if verbose:
+                print(f"[Stop] reached max_blocks={max_blocks} accepted blocks.")
