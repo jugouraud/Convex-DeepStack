@@ -798,7 +798,6 @@ def build_optimal_model(
         if max_blocks is not None and len(prediction_log) >= max_blocks:
             if verbose:
                 print(f"[Stop] reached max_blocks={max_blocks} accepted blocks.")
-
             break
 
         block_idx += 1
@@ -1099,7 +1098,6 @@ class ConvexDeepStack(nn.Module):
 
         Returns:
             tuple[torch.dtype, torch.device]: Module dtype and device, with CPU defaults
-
             when parameterless.
         """
         try:
