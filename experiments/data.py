@@ -3,7 +3,10 @@ import math
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 
+from .corruption import corrupt_training_set, sliced_wasserstein_outlier_introducer
+from .data_config import SignedShiftCorruptionConfig, SyntheticSplitConfig, WassersteinOutlierConfig
 from .utils import as_2d_column
+
 
 # Synthetic benchmark functions used by the controlled experiments.
 def ackley(X, a=20.0, b=0.2, c=2.0 * np.pi):
@@ -52,16 +55,6 @@ BENCHMARKS = {
         "why": "curved valley; stress-tests sparse interpolation and conditioning",
     },
 }
-
-from .corruption import (
-    corrupt_training_set,
-    sliced_wasserstein_outlier_introducer,
-)
-from .data_config import (
-    SignedShiftCorruptionConfig,
-    SyntheticSplitConfig,
-    WassersteinOutlierConfig,
-)
 
 
 def exact_split_counts(
