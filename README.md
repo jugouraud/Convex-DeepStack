@@ -2,6 +2,8 @@
 
 A Python implementation of **ConvexDeepStack**, a greedy residual stack built from convex SCNN and WaDiRo-SCNN blocks.
 
+The repository layout intentionally follows the public structure of Julien Pallage's `WaDiRo-SCNN` repository as closely as possible: a small installable package under `src/`, publication code under `experiments/`, and a direct top-level model API. The additional `tests/` and CI files are kept as verification safeguards.
+
 ---
 
 ## Introduction
@@ -12,6 +14,34 @@ ConvexDeepStack constructs a deeper predictor by fitting shallow convex neural-n
 
 The implementation relies on the public `wadiroscnn` package for the convex SCNN and WaDiRo-SCNN subproblems. ConvexDeepStack adds the residual-stacking, block-search, weighting, and stopping procedure around those models, while keeping the final stacked predictor as a PyTorch `nn.Module`.
 
+The installable source package is deliberately flat, mirroring `wadiroscnn`:
+
+```text
+.
+├── experiments/
+│   ├── comparison_models.py
+│   ├── config.py
+│   ├── corruption.py
+│   ├── data.py
+│   ├── data_config.py
+│   ├── metrics.py
+│   ├── tuning.py
+│   ├── sweep.py
+│   ├── reporting.py
+│   ├── runner.py
+│   └── utils.py
+├── src/
+│   └── convex_deepstack/
+│       ├── __init__.py
+│       └── models.py
+├── tests/
+│   ├── test_public_api.py
+│   └── test_upstream_api.py
+├── LICENSE
+├── README.md
+├── pyproject.toml
+└── setup.py
+```
 
 ## How to use it
 
