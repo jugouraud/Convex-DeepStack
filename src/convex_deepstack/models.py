@@ -248,3 +248,253 @@ def _objective_building_full(
         if exception is not None:
             out["exception"] = repr(exception)
         return out
+
+    def _success(search_loss):
+        """Create a standardized successful-candidate result.
+
+        Args:
+            search_loss (float): Residual validation loss of the candidate.
+
+        Returns:
+            dict[str, Any]: Standardized successful-candidate result.
+        """
+        return {
+            "loss": float(search_loss),
+            "status": "ok",
+            "reason": None,
+        }
+
+    def _residual_loss(rhat_val):
+        """Compute the mean squared error between validation residuals and residual predictions.
+
+        Args:
+            rhat_val (numpy.ndarray): Predicted validation residuals.
+
+        Returns:
+            float: Residual validation mean squared error.
+        """
+        r_val = self._ensure_2d(y_val - y_val_prev)
+        rhat_val = self._ensure_2d(rhat_val)
+        return float(np.mean((r_val - rhat_val) ** 2))
+
+    def _update_best(search_loss, model, params):
+        """Update the stored best candidate when a lower search loss is observed.
+
+        Args:
+            search_loss (float): Residual validation loss of the candidate.
+            model (Any): Trained candidate model.
+            params (dict[str, Any]): Hyperparameters of the candidate.
+
+        Returns:
+            None: The best-candidate record is updated in place.
+        """
+        if search_loss < best_holder["search_loss"]:
+            best_holder.update(
+                search_loss=float(search_loss),
+                model=deepcopy(model),
+                params=params,
+            )
+
+    print_trial_types = False
+
+    def evaluate_candidate(params):
+        """Train and evaluate one sampled residual-block candidate.
+
+        Args:
+            params (dict[str, Any]): Sampled block type and hyperparameters.
+
+        Returns:
+            dict[str, Any]: Standardized candidate-evaluation result.
+        """
+        block_type = params["block_type"]
+        X_tr_aug, X_val_aug = self._augment_inputs(
+            X_tr, X_val, y_tr_prev, y_val_prev, use_aug
+        )
+        r_tr = self._ensure_2d(y_tr - y_tr_prev)
+
+
+
+        if block_type == "scnn":
+            if verbose and print_trial_types:
+                print("Block type: SCNN")
+            max_neurons = int(params["max_neurons_scnn"])
+            bias = bool(params["bias_scnn"])
+            loss = params["loss_scnn"]
+            lamb_reg = float(params["lamb_reg_scnn"])
+            regularizer = params["regularizer_scnn"]
+
+            try:
+                mdl = scnn()
+                with suppress_cvxpy_vec_futurewarning():
+                    mdl.train(
+                        X_train=X_tr_aug,
+                        Y_train=r_tr,
+                        bias=bias,
+                        max_neurons=max_neurons,
+                        loss=loss,
+                        lamb_reg=lamb_reg,
+                        regularizer=regularizer,
+                    )
+                torch_model = mdl.get_torch_model()
+                torch_model.eval()
+                dtype, device_t = self._get_torch_dtype_device(torch_model)
+                rhat_val = self._ensure_2d(
+                    self._predict_torch_on_numpy(torch_model, X_val_aug, dtype, device_t)
+                )
+
+                if not np.isfinite(rhat_val).all():
+                    return _failure("nonfinite_rhat_val")
+
+                search_loss = _residual_loss(rhat_val)
+                if not np.isfinite(search_loss):
+                    return _failure("nonfinite_search_loss")
+            except Exception as e:
+                return _failure("exception", e)
+
+            _update_best(search_loss, mdl, {
+                "block_type": block_type,
+                "max_neurons": max_neurons,
+                "bias": bias,
+                "loss": loss,
+                "lamb_reg": lamb_reg,
+                "regularizer": regularizer,
+            })
+            return _success(search_loss)
+
+
+        if block_type == "wadiro":
+            if verbose and print_trial_types:
+                print("Block type: Wadiro")
+            radius = float(params["radius"])
+            max_neurons = int(params["max_neurons_wadiro"])
+            bias = bool(params["bias_wadiro"])
+            wasserstein = params["wasserstein"]
+
+            try:
+                mdl = wadiro_scnn()
+                with suppress_cvxpy_vec_futurewarning():
+                    mdl.train(
+                        X_train=X_tr_aug,
+                        Y_train=r_tr,
+                        radius=radius,
+                        bias=bias,
+                        max_neurons=max_neurons,
+                        verbose=False,
+                        wasserstein=wasserstein,
+                        solver="CLARABEL",
+                    )
+                torch_model = mdl.get_torch_model()
+                torch_model.eval()
+                dtype, device_t = self._get_torch_dtype_device(torch_model)
+                rhat_val = self._ensure_2d(
+                    self._predict_torch_on_numpy(torch_model, X_val_aug, dtype, device_t)
+                )
+
+                if not np.isfinite(rhat_val).all():
+                    return _failure("nonfinite_rhat_val")
+
+                search_loss = _residual_loss(rhat_val)
+                if not np.isfinite(search_loss):
+                    return _failure("nonfinite_search_loss")
+            except Exception as e:
+                return _failure("exception", e)
+
+            _update_best(search_loss, mdl, {
+                "block_type": block_type,
+                "radius": radius,
+                "max_neurons": max_neurons,
+                "bias": bias,
+                "wasserstein": wasserstein,
+            })
+            return _success(search_loss)
+
+        return _failure(f"unknown_block_type:{block_type}")
+
+    return evaluate_candidate, best_holder
+
+
+def _tpe_search_early_exit(
+    self,
+    data: ResidualSearchData,
+    config: EarlyExitConfig,
+):
+    """Run Optuna TPE search with conformal adaptive early stopping for one residual block.
+
+    Args:
+        self (ConvexDeepStack): Model receiving the selected residual block.
+        data (ResidualSearchData): Training and validation data for the residual search.
+        config (EarlyExitConfig): Hyperparameter-search and early-exit settings.
+
+    Returns:
+        dict[str, Any]: Best candidate, search history, early-exit trace, and sampler settings.
+    """
+    max_evals = config.max_evals
+    warmup = config.warmup
+    alpha = config.alpha
+    alpha_consistency = config.alpha_consistency
+    alpha_rarity = config.alpha_rarity
+    gamma = config.gamma
+    eps_stab = config.eps_stab
+    stability_window = config.stability_window
+    recent_window = config.recent_window
+    k_stop = config.k_stop
+    seed = config.seed
+    verbose = config.verbose
+    optuna_multivariate = config.optuna_multivariate
+    optuna_group = config.optuna_group
+    optuna_n_startup_trials = config.optuna_n_startup_trials
+    optuna_min_startup_trials = config.optuna_min_startup_trials
+    optuna_warn_independent_sampling = config.optuna_warn_independent_sampling
+    optuna_sampler_kwargs = config.optuna_sampler_kwargs
+
+    evaluate_candidate, best_holder = self._objective_building_full(
+        data,
+        verbose=verbose,
+    )
+
+    max_evals = int(max_evals)
+    if max_evals <= 0:
+        return {
+            "best_model": None,
+            "best_search_loss": np.inf,
+            "best_params": None,
+            "study": None,
+            "trials": None,
+            "trial_records": [],
+            "early_exit_trace": [],
+            "sampler_settings": {},
+        }
+
+    requested_warmup = max(1, int(warmup))
+    if optuna_n_startup_trials is None:
+
+        n_startup_trials = max(requested_warmup, int(optuna_min_startup_trials))
+    else:
+        n_startup_trials = max(1, int(optuna_n_startup_trials))
+
+    warmup = max(requested_warmup, n_startup_trials)
+    warmup = min(warmup, max_evals)
+
+    if optuna_group and not optuna_multivariate:
+        raise ValueError("Optuna TPESampler requires multivariate=True when group=True.")
+
+    sampler_kwargs = dict(optuna_sampler_kwargs or {})
+    sampler_kwargs.update({
+        "seed": seed,
+        "n_startup_trials": n_startup_trials,
+        "multivariate": bool(optuna_multivariate),
+        "group": bool(optuna_group),
+        "warn_independent_sampling": bool(optuna_warn_independent_sampling),
+    })
+
+    try:
+        sampler = TPESampler(**sampler_kwargs)
+    except TypeError as exc:
+        raise TypeError(
+            "Your installed Optuna version does not appear to support the requested "
+            "TPESampler arguments. Upgrade with: pip install -U optuna"
+        ) from exc
+
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+
+    FAIL_THRESHOLD = 1e11
