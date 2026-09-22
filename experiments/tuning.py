@@ -12,10 +12,9 @@ try:
 except ImportError:  # pragma: no cover - progress bars are optional
     tqdm = None
 
-from .utils import DEVICE, set_global_seed
-from .metrics import evaluate_model_on_splits
 from convex_deepstack import ConvexDeepStack, DeepStackConfig
 from convex_deepstack.models import suppress_cvxpy_vec_futurewarning
+
 from .comparison_models import (
     ResNetRegressor,
     ResNetTrainingConfig,
@@ -23,6 +22,8 @@ from .comparison_models import (
     train_resnet_best_epoch,
     train_wadiro_or_scnn,
 )
+from .metrics import evaluate_model_on_splits
+from .utils import DEVICE, set_global_seed
 
 
 @dataclass
