@@ -16,3 +16,7 @@ def run_all(cfg: dict | None = None):
         results_csv=cfg.get("results_csv", "control_sweep_results.csv"),
     )
     return results_df, best_df, summary_df, studies
+
+
+if __name__ == "__main__":
+    run_all()

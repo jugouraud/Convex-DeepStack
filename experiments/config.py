@@ -4,7 +4,7 @@ from .utils import SEED
 
 CONFIG = {
     # Synthetic benchmarks
-    "function_names": ["rosenbrock","rastrigin","rosenbrock"],
+    "function_names": ["ackley", "rastrigin", "rosenbrock"],
     "sweep_dimensions": [3,5,10],
     "sweep_samples_per_dim": [20,50,100],
     "sweep_seeds": [SEED],

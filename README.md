@@ -109,6 +109,9 @@ make check
 ```
 
 The CI workflow tests Python 3.10, 3.11, and 3.12 and verifies that a wheel can be built.
+The model/training/experiment boundaries and numerical contracts are documented in
+[`docs/architecture.md`](docs/architecture.md). The default search is bounded to 20
+accepted blocks; set `max_blocks` explicitly for a different finite budget.
 The release workflow is configured for PyPI Trusted Publishing when a GitHub Release is published.
 Before the first PyPI release, configure this GitHub repository as a Trusted Publisher for the
 `convex-deepstack` project on PyPI and create a GitHub environment named `pypi`.

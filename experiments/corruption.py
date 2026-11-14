@@ -35,10 +35,27 @@ def sliced_wasserstein_outlier_introducer(
     k_multiplier = config.k_multiplier
     max_output_scale = config.max_output_scale
     seed = config.seed
+    if config.n_points < 0 or config.n_projections < 1:
+        raise ValueError("n_points must be nonnegative and n_projections positive.")
+    if (not np.isfinite(config.distance_min) or config.distance_min <= 0
+            or not np.isfinite(config.k_multiplier) or config.k_multiplier <= 1
+            or not np.isfinite(config.max_output_scale) or config.max_output_scale <= 0):
+        raise ValueError("Outlier distance/scale must be positive and k_multiplier > 1.")
     verbose = config.verbose
-    optimal_transport = _load_optimal_transport()
-    domain_min, domain_max = domain
+    domain_min, domain_max = (np.asarray(v, dtype=np.float64) for v in domain)
     corrupted_signal = np.asarray(signal, dtype=np.float64).copy()
+    if (corrupted_signal.ndim != 2
+            or corrupted_signal.shape[1] != config.domain_dimensions + 1
+            or domain_min.shape != (config.domain_dimensions,)
+            or domain_max.shape != (config.domain_dimensions,)
+            or not np.isfinite(corrupted_signal).all()
+            or not np.isfinite(domain_min).all()
+            or not np.isfinite(domain_max).all()
+            or np.any(domain_min >= domain_max)):
+        raise ValueError("Invalid joint signal or outlier domain.")
+    if config.n_points == 0:
+        return corrupted_signal
+    optimal_transport = _load_optimal_transport()
 
     for _ in range(int(n_points)):
         original_x = rng.uniform(domain_min, domain_max, size=domain_dimensions)
@@ -49,7 +66,7 @@ def sliced_wasserstein_outlier_introducer(
 
         distance = 0.0
         multiplier = 1.0
-        while distance < distance_min:
+        for _ in range(1_000):
             random_x = rng.uniform(domain_min, domain_max, size=(1, domain_dimensions))
             random_y = rng.uniform(
                 -max_output_scale * multiplier,
@@ -73,7 +90,15 @@ def sliced_wasserstein_outlier_introducer(
                     )
                 )
             )
+            if not np.isfinite(distance):
+                raise ValueError("Sliced-Wasserstein distance must be finite.")
+            if distance >= distance_min:
+                break
             multiplier *= k_multiplier
+            if not np.isfinite(multiplier):
+                raise RuntimeError("Outlier scale overflowed before meeting distance target.")
+        else:
+            raise RuntimeError("Could not generate a qualifying outlier in 1000 attempts.")
 
         corrupted_signal = candidate_signal.copy()
 
@@ -102,12 +127,20 @@ def corrupt_training_set(
     random_state = config.random_state
     if not 0.0 <= float(corruption_fraction) <= 1.0:
         raise ValueError("corruption_fraction must be between 0 and 1.")
+    if not np.isfinite(target_noise_multiplier) or not np.isfinite(input_noise_multiplier):
+        raise ValueError("Noise multipliers must be finite.")
 
     aliases = {
         "signed_std_shift": "output_signed_std_shift",
         "input_and_label_signed_std_shift": "input_and_output_signed_std_shift",
     }
     corruption_mode = aliases.get(corruption_mode, corruption_mode)
+    valid_modes = {
+        "none", "input_signed_std_shift", "output_signed_std_shift",
+        "input_and_output_signed_std_shift",
+    }
+    if corruption_mode not in valid_modes:
+        raise ValueError(f"Unknown corruption_mode={corruption_mode!r}.")
 
     rng = np.random.default_rng(random_state)
     x_corrupted = np.asarray(x_train, dtype=np.float64).copy()
@@ -153,13 +186,6 @@ def corrupt_training_set(
             size=y_corrupted[output_mask].shape,
         )
         y_corrupted[output_mask] += signed_shift
-
-    valid_modes = input_modes | output_modes
-    if corruption_mode not in valid_modes:
-        raise ValueError(
-            f"Unknown corruption_mode={corruption_mode!r}. "
-            "Use 'none', a signed-std-shift mode, or 'sliced_wasserstein_outliers'."
-        )
 
     row_mask = np.any(input_mask, axis=1) | output_mask.reshape(-1)
     return x_corrupted, y_corrupted, row_mask, input_mask, output_mask

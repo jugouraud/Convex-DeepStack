@@ -105,7 +105,7 @@ class DeepStackConfig:
     improvement_tol: float = 1e-3
     min_blocks: int = 2
     block_patience: int = 2
-    max_blocks: int | None = None
+    max_blocks: int = 20
     max_evals: int = 100
     alpha: float = 0.1
     alpha_consistency: float = 0.8
@@ -124,6 +124,38 @@ class DeepStackConfig:
     optuna_min_startup_trials: int = 20
     optuna_warn_independent_sampling: bool = True
     optuna_sampler_kwargs: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject unsafe search budgets and inconsistent stopping parameters before training."""
+        if not (0.0 < self.nu <= 1.0):
+            raise ValueError("nu must be in (0, 1].")
+        if not math.isfinite(self.improvement_tol) or self.improvement_tol < 0:
+            raise ValueError("improvement_tol must be finite and nonnegative.")
+        if self.min_blocks < 1 or self.block_patience < 1:
+            raise ValueError("min_blocks and block_patience must be positive.")
+        if self.max_blocks is None or self.max_blocks < self.min_blocks:
+            raise ValueError("max_blocks must be finite and >= min_blocks.")
+        if self.max_evals < 1 or self.warmup < 1:
+            raise ValueError("max_evals and warmup must be positive.")
+        if self.stability_window < 1 or self.recent_window < 1 or self.k_stop < 1:
+            raise ValueError("early-exit window sizes and k_stop must be positive.")
+        if self.optuna_min_startup_trials < 1 or (
+            self.optuna_n_startup_trials is not None
+            and self.optuna_n_startup_trials < 1
+        ):
+            raise ValueError("Optuna startup trial counts must be positive.")
+        if self.optuna_group and not self.optuna_multivariate:
+            raise ValueError("Optuna grouped TPE requires multivariate sampling.")
+        if not math.isfinite(self.alpha) or not 0.0 < self.alpha < 1.0:
+            raise ValueError("alpha must be in (0, 1).")
+        for name in ("alpha_consistency", "alpha_rarity"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1].")
+        if not math.isfinite(self.gamma) or self.gamma <= 0:
+            raise ValueError("gamma must be positive and finite.")
+        if not math.isfinite(self.eps_stab) or self.eps_stab < 0:
+            raise ValueError("eps_stab must be finite and nonnegative.")
 
     def early_exit_for_block(self, block_index: int) -> EarlyExitConfig:
         """Create deterministic early-exit search settings for a residual block.
@@ -219,6 +251,12 @@ def _objective_building_full(
     y_tr_prev = data.y_train_previous
     y_val_prev = data.y_val_previous
 
+    X_tr_aug, X_val_aug = self._augment_inputs(
+        X_tr, X_val, y_tr_prev, y_val_prev, use_aug
+    )
+    r_tr = self._ensure_2d(y_tr - y_tr_prev)
+    r_val = self._ensure_2d(y_val - y_val_prev)
+
     best_holder = {
         "search_loss": np.inf,
         "params": None,
@@ -270,7 +308,6 @@ def _objective_building_full(
         Returns:
             float: Residual validation mean squared error.
         """
-        r_val = self._ensure_2d(y_val - y_val_prev)
         rhat_val = self._ensure_2d(rhat_val)
         return float(np.mean((r_val - rhat_val) ** 2))
 
@@ -304,12 +341,6 @@ def _objective_building_full(
             dict[str, Any]: Standardized candidate-evaluation result.
         """
         block_type = params["block_type"]
-        X_tr_aug, X_val_aug = self._augment_inputs(
-            X_tr, X_val, y_tr_prev, y_val_prev, use_aug
-        )
-        r_tr = self._ensure_2d(y_tr - y_tr_prev)
-
-
 
         if block_type == "scnn":
             if verbose and print_trial_types:
@@ -740,6 +771,8 @@ def build_optimal_model(
         dict[str, Any]: Training history and stopping information for the constructed stack.
     """
     config = DeepStackConfig() if config is None else config
+    if self.blocks:
+        raise RuntimeError("build_optimal_model requires an empty stack; create a new model.")
     nu = config.nu
     improvement_tol = config.improvement_tol
     min_blocks = config.min_blocks
@@ -751,8 +784,22 @@ def build_optimal_model(
     optuna_n_startup_trials = config.optuna_n_startup_trials
     optuna_min_startup_trials = config.optuna_min_startup_trials
 
+    X_tr = np.asarray(X_tr, dtype=np.float64)
+    X_val = np.asarray(X_val, dtype=np.float64)
     y_tr = self._ensure_2d(y_tr).astype(np.float64)
     y_val = self._ensure_2d(y_val).astype(np.float64)
+    if (X_tr.ndim != 2 or X_val.ndim != 2
+            or X_tr.shape[1] != self.in_dim_x or X_val.shape[1] != self.in_dim_x):
+        raise ValueError("Training and validation features must be 2D with in_dim_x columns.")
+    if (y_tr.ndim != 2 or y_val.ndim != 2
+            or y_tr.shape[1] != self.out_dim or y_val.shape[1] != self.out_dim):
+        raise ValueError("Targets must have out_dim columns.")
+    if min(X_tr.shape[0], X_val.shape[0]) < 1 or (
+        X_tr.shape[0] != y_tr.shape[0] or X_val.shape[0] != y_val.shape[0]
+    ):
+        raise ValueError("Train/validation samples must be nonempty and aligned with targets.")
+    if not all(np.isfinite(array).all() for array in (X_tr, y_tr, X_val, y_val)):
+        raise ValueError("Train/validation arrays must contain only finite values.")
 
     min_blocks = max(1, int(min_blocks))
     block_patience = max(1, int(block_patience))
@@ -764,8 +811,8 @@ def build_optimal_model(
                 f"max_blocks={max_blocks} must be >= min_blocks={min_blocks}."
             )
 
-    y_tr_prev = np.zeros((X_tr.shape[0], 1), dtype=np.float64)
-    y_val_prev = np.zeros((X_val.shape[0], 1), dtype=np.float64)
+    y_tr_prev = np.zeros((X_tr.shape[0], self.out_dim), dtype=np.float64)
+    y_val_prev = np.zeros((X_val.shape[0], self.out_dim), dtype=np.float64)
 
     prediction_log = []
     block_idx = 0
@@ -1067,6 +1114,8 @@ class ConvexDeepStack(nn.Module):
         Returns:
             None: Initializes the model in place.
         """
+        if in_dim_x < 1 or out_dim < 1:
+            raise ValueError("in_dim_x and out_dim must be positive.")
         super().__init__()
         self.in_dim_x = in_dim_x
         self.out_dim = out_dim
@@ -1084,7 +1133,11 @@ class ConvexDeepStack(nn.Module):
             numpy.ndarray: Array with at least two dimensions.
         """
         array = np.asarray(array)
-        return array.reshape(-1, 1) if array.ndim == 1 else array
+        if array.ndim == 1:
+            return array.reshape(-1, 1)
+        if array.ndim != 2:
+            raise ValueError("Expected a one- or two-dimensional target/prediction array.")
+        return array
 
     @staticmethod
     def _get_torch_dtype_device(torch_model: nn.Module):
@@ -1136,6 +1189,8 @@ class ConvexDeepStack(nn.Module):
         """
         validation_residual = ConvexDeepStack._ensure_2d(y_val - y_val_prev)
         residual_prediction = ConvexDeepStack._ensure_2d(rhat_val)
+        if validation_residual.shape != residual_prediction.shape:
+            raise ValueError("Residual predictions must match validation target shape.")
         numerator = float(np.sum(validation_residual * residual_prediction))
         denominator = float(np.sum(residual_prediction * residual_prediction) + 1e-12)
         gamma = numerator / denominator
@@ -1237,11 +1292,13 @@ class ConvexDeepStack(nn.Module):
         Returns:
             None: Updates the model in place.
         """
+        if not isinstance(pretrained_block, nn.Module):
+            raise TypeError("pretrained_block must be a torch.nn.Module.")
+        weight = torch.as_tensor(weight, dtype=torch.float64)
+        if weight.numel() != 1 or not torch.isfinite(weight).all():
+            raise ValueError("Block weight must be a finite scalar.")
         self.blocks.append(pretrained_block)
-        if not isinstance(weight, torch.Tensor):
-            weight = torch.tensor(weight, dtype=torch.float32)
-        parameter = nn.Parameter(weight.reshape(()).to(torch.float32), requires_grad=False)
-        self.weights.append(parameter)
+        self.weights.append(nn.Parameter(weight.reshape(()), requires_grad=False))
 
     def set_block_weight(self, idx: int, new_weight: float | torch.Tensor) -> None:
         """Replace the fixed additive weight of one residual block.
@@ -1253,10 +1310,12 @@ class ConvexDeepStack(nn.Module):
         Returns:
             None: Updates the selected weight in place.
         """
-        if not isinstance(new_weight, torch.Tensor):
-            new_weight = torch.tensor(new_weight, dtype=torch.float32)
+        weight = self.weights[idx]
+        new_weight = torch.as_tensor(new_weight, device=weight.device, dtype=weight.dtype)
+        if new_weight.numel() != 1 or not torch.isfinite(new_weight).all():
+            raise ValueError("Block weight must be a finite scalar.")
         with torch.no_grad():
-            self.weights[idx].copy_(new_weight.reshape(()).to(torch.float32))
+            weight.copy_(new_weight.reshape(()))
 
     def get_block_weight(self, idx: int) -> torch.Tensor:
         """Return a detached copy of one residual-block weight.
@@ -1280,6 +1339,8 @@ class ConvexDeepStack(nn.Module):
             torch.Tensor | list[torch.Tensor]: Final prediction or intermediate predictions
             for all blocks.
         """
+        if x.ndim != 2 or x.shape[1] != self.in_dim_x:
+            raise ValueError("Input must have shape (batch, in_dim_x).")
         batch_size = x.size(0)
         device, dtype = x.device, x.dtype
         ensemble_prediction = torch.zeros(
@@ -1294,12 +1355,12 @@ class ConvexDeepStack(nn.Module):
             augmented_input = torch.cat([x, ensemble_prediction], dim=1)
             residual_prediction = block(augmented_input)
 
-            if residual_prediction.dim() == 1:
-                residual_prediction = residual_prediction.view(batch_size, self.out_dim)
-            elif residual_prediction.size(-1) != self.out_dim:
-                shape = tuple(residual_prediction.shape)
+            if residual_prediction.dim() == 1 and self.out_dim == 1:
+                residual_prediction = residual_prediction.reshape(batch_size, 1)
+            if residual_prediction.shape != (batch_size, self.out_dim):
                 raise RuntimeError(
-                    f"Block {block_index} returned {shape}; expected last dim={self.out_dim}"
+                    f"Block {block_index} returned {tuple(residual_prediction.shape)}; "
+                    f"expected {(batch_size, self.out_dim)}"
                 )
 
             weight = self.weights[block_index].to(device=device, dtype=dtype)

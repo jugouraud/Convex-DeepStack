@@ -91,6 +91,12 @@ def _resolve_config(
 def _validate_config(config: SyntheticSplitConfig) -> tuple[str, dict]:
     if not 0.0 <= float(config.corruption_fraction) <= 1.0:
         raise ValueError("corruption_fraction must be between 0 and 1.")
+    if _normalise_corruption_mode(config.corruption_mode) not in {
+        "none", "sliced_wasserstein_outliers", "signed_std_shift",
+        "output_signed_std_shift", "input_signed_std_shift",
+        "input_and_label_signed_std_shift", "input_and_output_signed_std_shift",
+    }:
+        raise ValueError(f"Unknown corruption_mode={config.corruption_mode!r}.")
 
     function_name = config.function_name.lower()
     if function_name not in BENCHMARKS:
@@ -171,13 +177,13 @@ def _apply_wasserstein_corruption(
     scaled: dict,
 ) -> dict:
     x_train = scaled["X_train_s"] + rng.normal(0, 0.05, raw["X_train"].shape)
-    x_val = scaled["X_val_s"] + rng.normal(0, 0.05, raw["X_val"].shape)
+    x_val = scaled["X_val_s"]
     y_train = scaled["y_train_s_clean"] + rng.normal(
         0,
         0.05,
         scaled["y_train_s_clean"].shape,
     )
-    y_val = scaled["y_val_s"] + rng.normal(0, 0.05, raw["y_val"].shape)
+    y_val = scaled["y_val_s"]
 
     n_inserted = max(
         0,
@@ -273,6 +279,8 @@ def _apply_corruption(
     scaled: dict,
 ) -> dict:
     mode = _normalise_corruption_mode(config.corruption_mode)
+    if config.corruption_fraction == 0:
+        return _apply_signed_shift_corruption(config, raw, scaled, "none")
     if mode == "sliced_wasserstein_outliers":
         return _apply_wasserstein_corruption(config, spec, rng, raw, scaled)
     return _apply_signed_shift_corruption(config, raw, scaled, mode)
@@ -325,7 +333,7 @@ def _build_payload(
         "data_generation_metadata": {
             "split": "shuffle_false_ordered",
             "scaler": "StandardScaler(with_mean=False, with_std=False)",
-            "corruption": "Bernoulli masks with signed +/- std shifts",
+            "corruption": _normalise_corruption_mode(config.corruption_mode),
             "mean_x": np.mean(raw["X_train"], axis=0),
             "std_x": np.std(raw["X_train"], axis=0),
             "mean_y": np.mean(raw["y_train_clean"]),
