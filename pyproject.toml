@@ -35,6 +35,8 @@ experiments = [
     "scikit-learn",
     "scipy",
     "tqdm",
+    "tomli>=2; python_version < '3.11'",
+    "ucimlrepo",
 ]
 dev = [
     "matplotlib",
@@ -46,6 +48,8 @@ dev = [
     "scikit-learn",
     "scipy",
     "tqdm",
+    "tomli>=2; python_version < '3.11'",
+    "ucimlrepo",
 ]
 
 [tool.setuptools.packages.find]

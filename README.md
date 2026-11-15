@@ -12,6 +12,8 @@ ConvexDeepStack constructs a deeper predictor by fitting shallow convex neural-n
 
 The implementation relies on the public `wadiroscnn` package for the convex SCNN and WaDiRo-SCNN subproblems. ConvexDeepStack adds the residual-stacking, block-search, weighting, and stopping procedure around those models, while keeping the final stacked predictor as a PyTorch `nn.Module`.
 
+The per-block TPE search uses an ACI quantile-stability trigger. After triggering, it stops following `ceil(1 / alpha_stop) - 1` further valid trials, unless `max_evals` is reached first. The new-best rank bound relies on a separate, unverified post-trigger exchangeability assumption; quantile stability alone is not a coverage or optimality guarantee.
+
 
 ```
 
@@ -55,6 +57,7 @@ config = DeepStackConfig(
     max_blocks=20,
     max_evals=100,
     warmup=20,
+    alpha_stop=0.05,
 )
 
 history = model.build_optimal_model(
@@ -95,6 +98,43 @@ The main experiment files are:
 - `tuning.py`: model-level Optuna studies;
 - `sweep.py`: experiment orchestration;
 - `metrics.py` and `reporting.py`: evaluation metrics and publication summaries.
+
+### UCI regression experiments
+
+The UCI sweep follows the project's existing Optuna/TPE training pipeline and the
+Drive notebooks: a deterministic 60/20/20 train/validation/test split, preprocessing
+fitted only on training data, selection by validation MinMax-normalised MSE, and
+original-unit validation/test metrics. The default TOML config includes Concrete
+Compressive Strength (UCI 165), Energy Efficiency (242, first target), and Wine
+Quality (186, capped at 1,599 sampled observations). Edit
+`experiments/config.toml` to select datasets, models, trial counts, search
+spaces, and Colab hardware. Results are saved to `outputs/uci/`.
+
+Run without Colab:
+
+```bash
+python -m experiments.uci_runner --config experiments/config.toml
+```
+
+On Windows, the UCI configuration excludes the direct WaDiRo-SCNN baseline and
+ConvexDeepStack searches SCNN residual blocks only. This avoids a native CVXPY
+extension abort observed in WaDiRo-SCNN; run Linux or Colab for WaDiRo studies.
+
+For remote execution, install and authenticate Google's official CLI on Linux or
+macOS (`pip install google-colab-cli`, then follow `colab` authentication prompts).
+The launcher provisions a Colab session, uploads a source snapshot, executes the
+sweep, downloads CSVs/figures/manifest, and stops the session:
+
+```bash
+python scripts/run_uci_colab.py --config experiments/config.toml
+```
+
+While running, `outputs/uci/status.json` is updated atomically after each trial;
+it is removed after a successful download and retained with failure status on
+errors. Remote runs require network access to UCI datasets and Python packages.
+Run `pytest -q tests/test_uci_pipeline.py tests/test_uci_colab.py` for the
+focused offline checks. If cleanup fails, status remains `cleanup_required` and
+the named Colab session must be stopped manually.
 
 ## Upstream dependency
 

@@ -47,7 +47,7 @@ def save_results(all_rows, config):
         if successful.empty:
             best_df = pd.DataFrame()
         else:
-            group_columns = [
+            group_columns = config.get("group_columns", [
                 "function",
                 "dimension",
                 "samples_per_dim",
@@ -55,7 +55,7 @@ def save_results(all_rows, config):
                 "corruption_fraction",
                 "corruption_mode",
                 "Model",
-            ]
+            ])
             best_df = (
                 successful.sort_values(group_columns + ["objective_value"])
                 .groupby(group_columns, as_index=False)

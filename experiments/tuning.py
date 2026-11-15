@@ -1,5 +1,6 @@
 import json
 import time
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -36,6 +37,7 @@ class ModelStudyContext:
     corruption_fraction: float
     corruption_mode: str
     result_rows: list[dict]
+    trial_callback: Callable[[dict], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -126,11 +128,6 @@ def suggest_trial_config(trial, model_name, base_config):
             "convex_warmup",
             space["convex_warmup"],
         )
-        config["convex_k_stop"] = _space_int(
-            trial,
-            "convex_k_stop",
-            space["convex_k_stop"],
-        )
     else:
         raise ValueError(f"Unknown model_name={model_name!r}")
 
@@ -140,6 +137,18 @@ def suggest_trial_config(trial, model_name, base_config):
 def dataset_metadata(context: ModelStudyContext) -> dict:
     """Return the dataset columns repeated on each trial record."""
     data = context.data
+    if "dataset_key" in data:
+        return {
+            "dataset": data["dataset_key"],
+            "uci_id": data["uci_id"],
+            "target": data["target_name"],
+            "dimension": data["n_dim"],
+            "n_original_features": data["n_original_features"],
+            "seed": data["seed"],
+            "n_train": data["n_train"],
+            "n_val": data["n_val"],
+            "n_test": data["n_test"],
+        }
     return {
         "function": data["function_name"],
         "dimension": data["n_dim"],
@@ -254,7 +263,7 @@ def _train_deepstack(data: dict, trial_config: dict, trial_seed: int):
         max_blocks=int(trial_config["convex_max_blocks"]),
         max_evals=int(trial_config["convex_max_evals"]),
         warmup=int(trial_config["convex_warmup"]),
-        k_stop=int(trial_config["convex_k_stop"]),
+        alpha_stop=float(trial_config.get("convex_alpha_stop", 0.05)),
         verbose=False,
         seed=int(trial_seed),
         optuna_multivariate=bool(trial_config.get("convex_optuna_multivariate", True)),
@@ -308,7 +317,7 @@ def _hyperparameter_columns(trial_config: dict) -> dict:
         "convex_max_blocks",
         "convex_max_evals",
         "convex_warmup",
-        "convex_k_stop",
+        "convex_alpha_stop",
         "convex_improvement_tol",
         "convex_min_blocks",
         "convex_block_patience",
@@ -414,6 +423,8 @@ def run_model_study(context: ModelStudyContext):
         row = make_trial_row(context, trial, trial_config, outcome)
         context.result_rows.append(row)
         trial.set_user_attr("result_row", row)
+        if context.trial_callback is not None:
+            context.trial_callback(row)
         objective_value = row[base_config["objective_metric"]]
         return float(objective_value) if np.isfinite(objective_value) else float("inf")
 

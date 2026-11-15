@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass
 
 import numpy as np
@@ -18,6 +19,11 @@ from .utils import DEVICE
 def train_wadiro_or_scnn(kind, X_train, y_train, *, cfg, device=DEVICE):
     """Train either WaDiRo-SCNN or SCNN and return both the package model and Torch predictor."""
     if kind == "wadiro":
+        if sys.platform == "win32":
+            raise RuntimeError(
+                "WaDiRo-SCNN is disabled on Windows because its CVXPY native extension "
+                "can terminate the interpreter. Run this backend on Linux or Colab."
+            )
         model = wadiro_scnn()
         with suppress_cvxpy_vec_futurewarning():
             model.train(

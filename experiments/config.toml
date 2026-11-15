@@ -1,0 +1,57 @@
+# Edit this file, then run: python scripts/run_uci_colab.py --config experiments/config.toml
+[experiment]
+sweep_seeds = [42]
+models_to_run = ["Convex DeepStack", "SCNN", "ResNet"]
+train_fraction = 0.60
+val_fraction = 0.20
+test_fraction = 0.20
+objective_metric = "val_MinMax_normalised_MSE"
+wide_neurons = 512
+resnet_width = 64
+resnet_epochs = 400
+resnet_patience = 60
+convex_min_blocks = 2
+convex_block_patience = 2
+convex_improvement_tol = 0.001
+convex_alpha_stop = 0.05
+checkpoint_after_each_study = true
+
+[trials]
+"Convex DeepStack" = 1
+SCNN = 100
+ResNet = 100
+
+# UCI IDs and optional row caps follow the Drive notebooks.
+# With multiple targets, target_column defaults to the first UCI target.
+[[datasets]]
+key = "appliances_energy"
+id = 374
+max_rows = 5000
+
+# Search spaces retain the repository's synthetic benchmark conventions.
+[search_space.resnet_layers]
+low = 20
+high = 20
+
+[search_space.resnet_dropout]
+low = 0.0
+high = 0.40
+
+[search_space.resnet_learning_rate]
+low = 0.0001
+high = 0.003
+log = true
+
+[search_space.resnet_weight_decay]
+low = 0.000001
+high = 0.01
+log = true
+
+[search_space]
+resnet_batch_size = [32, 64, 128]
+
+[colab]
+session = "cds-uci"
+gpu = ""  # SCNN/convex solvers run on CPU; use "T4" for ResNet-heavy runs if desired.
+output_dir = "outputs/uci"
+execution_timeout_seconds = 86400

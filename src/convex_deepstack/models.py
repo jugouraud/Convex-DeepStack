@@ -1,4 +1,5 @@
 import math
+import sys
 import warnings
 from contextlib import contextmanager
 from copy import deepcopy
@@ -81,13 +82,10 @@ class EarlyExitConfig:
     max_evals: int
     warmup: int
     alpha: float
-    alpha_consistency: float
-    alpha_rarity: float
+    alpha_stop: float
     gamma: float
     eps_stab: float
     stability_window: int
-    recent_window: int
-    k_stop: int
     seed: int
     verbose: bool
     optuna_multivariate: bool
@@ -104,24 +102,21 @@ class DeepStackConfig:
     nu: float = 0.1
     improvement_tol: float = 1e-3
     min_blocks: int = 2
-    block_patience: int = 2
-    max_blocks: int = 20
+    block_patience: int = 1
+    max_blocks: int = 100
     max_evals: int = 100
     alpha: float = 0.1
-    alpha_consistency: float = 0.8
-    alpha_rarity: float = 0.1
+    alpha_stop: float = 0.05
     gamma: float = 0.01
     eps_stab: float = 5e-3
-    stability_window: int = 10
-    recent_window: int = 10
-    k_stop: int = 3
-    warmup: int = 10
+    stability_window: int = 5
+    warmup: int = 5
     verbose: bool = True
     seed: int = 0
     optuna_multivariate: bool = True
     optuna_group: bool = True
     optuna_n_startup_trials: int | None = None
-    optuna_min_startup_trials: int = 20
+    optuna_min_startup_trials: int = 5
     optuna_warn_independent_sampling: bool = True
     optuna_sampler_kwargs: Mapping[str, Any] | None = None
 
@@ -137,8 +132,8 @@ class DeepStackConfig:
             raise ValueError("max_blocks must be finite and >= min_blocks.")
         if self.max_evals < 1 or self.warmup < 1:
             raise ValueError("max_evals and warmup must be positive.")
-        if self.stability_window < 1 or self.recent_window < 1 or self.k_stop < 1:
-            raise ValueError("early-exit window sizes and k_stop must be positive.")
+        if self.stability_window < 1:
+            raise ValueError("stability_window must be positive.")
         if self.optuna_min_startup_trials < 1 or (
             self.optuna_n_startup_trials is not None
             and self.optuna_n_startup_trials < 1
@@ -148,10 +143,8 @@ class DeepStackConfig:
             raise ValueError("Optuna grouped TPE requires multivariate sampling.")
         if not math.isfinite(self.alpha) or not 0.0 < self.alpha < 1.0:
             raise ValueError("alpha must be in (0, 1).")
-        for name in ("alpha_consistency", "alpha_rarity"):
-            value = getattr(self, name)
-            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be in [0, 1].")
+        if not math.isfinite(self.alpha_stop) or not 0.0 < self.alpha_stop < 1.0:
+            raise ValueError("alpha_stop must be in (0, 1).")
         if not math.isfinite(self.gamma) or self.gamma <= 0:
             raise ValueError("gamma must be positive and finite.")
         if not math.isfinite(self.eps_stab) or self.eps_stab < 0:
@@ -170,13 +163,10 @@ class DeepStackConfig:
             max_evals=self.max_evals,
             warmup=self.warmup,
             alpha=self.alpha,
-            alpha_consistency=self.alpha_consistency,
-            alpha_rarity=self.alpha_rarity,
+            alpha_stop=self.alpha_stop,
             gamma=self.gamma,
             eps_stab=self.eps_stab,
             stability_window=self.stability_window,
-            recent_window=self.recent_window,
-            k_stop=self.k_stop,
             seed=int(self.seed) + block_index - 1,
             verbose=self.verbose,
             optuna_multivariate=self.optuna_multivariate,
@@ -197,14 +187,21 @@ def _suggest_params_optuna(trial):
     Returns:
         dict[str, Any]: Sampled block type and associated hyperparameters.
     """
-    block_type = trial.suggest_categorical("block_type", ["wadiro", "scnn"])
+    # CVXPY's native WaDiRo formulation can abort the Windows interpreter before
+    # Python can surface an exception. Restrict Windows searches to SCNN blocks;
+    # Linux/Colab retains the full SCNN/WaDiRo search space.
+    block_type = (
+        "scnn"
+        if sys.platform == "win32"
+        else trial.suggest_categorical("block_type", ["wadiro", "scnn"])
+    )
 
     if block_type == "wadiro":
         return {
             "block_type": "wadiro",
             "radius": trial.suggest_float("radius", 1e-5, 1e2, log=True),
             "max_neurons_wadiro": trial.suggest_categorical(
-                "max_neurons_wadiro", [2, 4, 8, 16, 32, 64, 128, 256, 512]
+                "max_neurons_wadiro", [2, 4, 8, 16, 32, 64, 128]
             ),
             "bias_wadiro": True,
             "wasserstein": trial.suggest_categorical("wasserstein", ["l1", "l2"]),
@@ -214,7 +211,7 @@ def _suggest_params_optuna(trial):
         "block_type": "scnn",
         "lamb_reg_scnn": trial.suggest_float("lamb_reg_scnn", 1e-6, 1e3, log=True),
         "max_neurons_scnn": trial.suggest_categorical(
-            "max_neurons_scnn", [2, 4, 8, 16, 32, 64, 128, 256, 512]
+            "max_neurons_scnn", [2, 4, 8, 16, 32, 64, 128]
         ),
 
         "bias_scnn": True,
@@ -446,41 +443,12 @@ def _tpe_search_early_exit(
     data: ResidualSearchData,
     config: EarlyExitConfig,
 ):
-    """Run Optuna TPE search with conformal adaptive early stopping for one residual block.
+    """Run block-level TPE until the paper's ACI/exchangeability stopping rule applies.
 
-    Args:
-        self (ConvexDeepStack): Model receiving the selected residual block.
-        data (ResidualSearchData): Training and validation data for the residual search.
-        config (EarlyExitConfig): Hyperparameter-search and early-exit settings.
-
-    Returns:
-        dict[str, Any]: Best candidate, search history, early-exit trace, and sampler settings.
+    The post-trigger bound is conditional on exchangeability of subsequent losses;
+    stable ACI quantiles do not establish that assumption.
     """
-    max_evals = config.max_evals
-    warmup = config.warmup
-    alpha = config.alpha
-    alpha_consistency = config.alpha_consistency
-    alpha_rarity = config.alpha_rarity
-    gamma = config.gamma
-    eps_stab = config.eps_stab
-    stability_window = config.stability_window
-    recent_window = config.recent_window
-    k_stop = config.k_stop
-    seed = config.seed
-    verbose = config.verbose
-    optuna_multivariate = config.optuna_multivariate
-    optuna_group = config.optuna_group
-    optuna_n_startup_trials = config.optuna_n_startup_trials
-    optuna_min_startup_trials = config.optuna_min_startup_trials
-    optuna_warn_independent_sampling = config.optuna_warn_independent_sampling
-    optuna_sampler_kwargs = config.optuna_sampler_kwargs
-
-    evaluate_candidate, best_holder = self._objective_building_full(
-        data,
-        verbose=verbose,
-    )
-
-    max_evals = int(max_evals)
+    max_evals = int(config.max_evals)
     if max_evals <= 0:
         return {
             "best_model": None,
@@ -493,28 +461,35 @@ def _tpe_search_early_exit(
             "sampler_settings": {},
         }
 
-    requested_warmup = max(1, int(warmup))
-    if optuna_n_startup_trials is None:
-
-        n_startup_trials = max(requested_warmup, int(optuna_min_startup_trials))
-    else:
-        n_startup_trials = max(1, int(optuna_n_startup_trials))
-
-    warmup = max(requested_warmup, n_startup_trials)
-    warmup = min(warmup, max_evals)
-
-    if optuna_group and not optuna_multivariate:
+    if not 0.0 < config.alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1.")
+    if not 0.0 < config.alpha_stop < 1.0:
+        raise ValueError("alpha_stop must be strictly between 0 and 1.")
+    if not np.isfinite(config.gamma) or config.gamma <= 0.0:
+        raise ValueError("gamma must be positive.")
+    if config.stability_window < 1 or not np.isfinite(config.eps_stab) or config.eps_stab < 0.0:
+        raise ValueError("stability_window must be positive and eps_stab nonnegative.")
+    if config.optuna_group and not config.optuna_multivariate:
         raise ValueError("Optuna TPESampler requires multivariate=True when group=True.")
 
-    sampler_kwargs = dict(optuna_sampler_kwargs or {})
-    sampler_kwargs.update({
-        "seed": seed,
-        "n_startup_trials": n_startup_trials,
-        "multivariate": bool(optuna_multivariate),
-        "group": bool(optuna_group),
-        "warn_independent_sampling": bool(optuna_warn_independent_sampling),
-    })
+    evaluate_candidate, best_holder = self._objective_building_full(
+        data, verbose=config.verbose
+    )
+    requested_warmup = max(1, int(config.warmup))
+    if config.optuna_n_startup_trials is None:
+        n_startup_trials = max(requested_warmup, int(config.optuna_min_startup_trials))
+    else:
+        n_startup_trials = max(1, int(config.optuna_n_startup_trials))
+    warmup = min(max(requested_warmup, n_startup_trials), max_evals)
 
+    sampler_kwargs = dict(config.optuna_sampler_kwargs or {})
+    sampler_kwargs.update({
+        "seed": config.seed,
+        "n_startup_trials": n_startup_trials,
+        "multivariate": bool(config.optuna_multivariate),
+        "group": bool(config.optuna_group),
+        "warn_independent_sampling": bool(config.optuna_warn_independent_sampling),
+    })
     try:
         sampler = TPESampler(**sampler_kwargs)
     except TypeError as exc:
@@ -522,61 +497,44 @@ def _tpe_search_early_exit(
             "Your installed Optuna version does not appear to support the requested "
             "TPESampler arguments. Upgrade with: pip install -U optuna"
         ) from exc
-
     study = optuna.create_study(direction="minimize", sampler=sampler)
 
-    FAIL_THRESHOLD = 1e11
+    def empirical_upper_quantile(values: list[float], alpha_level: float) -> float:
+        """Return the empirical (1-alpha) quantile with the upper order statistic."""
+        ordered = sorted(values)
+        index = max(0, math.ceil(len(ordered) * (1.0 - alpha_level)) - 1)
+        return ordered[index]
 
-    def conformal_upper_quantile(values, alpha_level):
-        """Compute the finite-sample conformal upper quantile of observed losses.
-
-        Args:
-            values (Iterable[float]): Observed loss values.
-            alpha_level (float): Miscoverage level used to select the upper quantile.
-
-        Returns:
-            float: Selected conformal upper quantile.
-        """
-        vals = sorted(float(v) for v in values)
-        n = len(vals)
-        if n == 0:
-            return np.inf
-        idx = int(math.ceil((n + 1) * (1.0 - alpha_level))) - 1
-        idx = max(0, min(idx, n - 1))
-        return vals[idx]
-
-    losses_valid = []
-    new_best_flags = []
-    incumbent_loss = None
-
-    U_warm = None
-    alpha_t = float(alpha)
-    alpha_changes = []
-
-    exploitation_mode = False
-    stop_counter = 0
+    losses_valid: list[float] = []
+    alpha_t = float(config.alpha)
+    previous_q: float | None = None
+    q_changes: list[float] = []
+    trigger_trial: int | None = None
+    post_trigger_trials = 0
+    m_stop = math.ceil(1.0 / config.alpha_stop) - 1
     early_exit_trace = []
     trial_records = []
+    stop_reason = "budget_exhausted"
 
     progress = (
         tqdm(total=max_evals, desc="Optuna TPE trials", unit="trial", leave=True)
-        if (tqdm is not None and verbose)
+        if (tqdm is not None and config.verbose)
         else None
     )
 
-
     for t in range(1, max_evals + 1):
+        # Equation (11): only past valid losses enter the pre-trial threshold.
+        q_t = (
+            empirical_upper_quantile(losses_valid, alpha_t)
+            if len(losses_valid) >= warmup and trigger_trial is None
+            else None
+        )
         trial = study.ask()
         params = self._suggest_params_optuna(trial)
         result = evaluate_candidate(params)
-
         loss_t = float(result.get("loss", np.inf))
-        if not np.isfinite(loss_t):
-            loss_t = 1e12
-
-
-        study.tell(trial, loss_t)
-
+        is_valid = result.get("status") == "ok" and np.isfinite(loss_t)
+        study.tell(trial, loss_t if np.isfinite(loss_t) else 1e12)
         trial_records.append({
             "trial": t,
             "number": trial.number,
@@ -586,141 +544,92 @@ def _tpe_search_early_exit(
             "reason": result.get("reason"),
             "exception": result.get("exception"),
         })
-
         if progress is not None:
             progress.update(1)
             if np.isfinite(best_holder["search_loss"]):
                 progress.set_postfix(best=f"{best_holder['search_loss']:.6g}")
 
-        is_valid = np.isfinite(loss_t) and loss_t < FAIL_THRESHOLD
         if not is_valid:
+            # Failed fits supply no regression loss for the exchangeability argument.
+            # They still consume the search budget and interrupt consecutive stability.
+            if trigger_trial is None:
+                previous_q = None
+                q_changes.clear()
+            early_exit_trace.append({
+                "trial": t,
+                "loss": loss_t,
+                "phase": "failed",
+                "q_hat": q_t,
+                "alpha_t": alpha_t,
+                "e_t": None,
+                "q_delta": None,
+                "trigger_trial": trigger_trial,
+                "post_trigger_trials": post_trigger_trials,
+                "stopped": False,
+            })
             continue
-
-
-        if incumbent_loss is None:
-            is_new_best = 1
-            incumbent_loss = loss_t
-        else:
-            is_new_best = int(loss_t < incumbent_loss)
-            incumbent_loss = min(incumbent_loss, loss_t)
 
         losses_valid.append(loss_t)
-        new_best_flags.append(is_new_best)
-
-        if len(losses_valid) < warmup:
+        if trigger_trial is not None:
+            post_trigger_trials += 1
+            stopped = post_trigger_trials >= m_stop
             early_exit_trace.append({
                 "trial": t,
-                "loss": loss_t,
+                "phase": "exploitation",
+                "q_hat": None,
+                "alpha_t": alpha_t,
+                "e_t": None,
+                "q_delta": None,
+                "trigger_trial": trigger_trial,
+                "post_trigger_trials": post_trigger_trials,
+                "stopped": stopped,
+            })
+            if stopped:
+                stop_reason = "exchangeability_trial_count"
+                break
+            continue
+
+        if q_t is None:
+            early_exit_trace.append({
+                "trial": t,
                 "phase": "warmup",
-                "U_warm": U_warm,
                 "q_hat": None,
                 "alpha_t": alpha_t,
                 "e_t": None,
-                "d_t": None,
-                "p_good": None,
-                "p_newbest": None,
-                "exploitation_mode": False,
-                "stop_counter": stop_counter,
+                "q_delta": None,
+                "trigger_trial": None,
+                "post_trigger_trials": 0,
+                "stopped": False,
             })
             continue
 
-        if U_warm is None:
-            U_warm = conformal_upper_quantile(losses_valid[:warmup], alpha)
-            early_exit_trace.append({
-                "trial": t,
-                "loss": loss_t,
-                "phase": "warmup_complete",
-                "U_warm": U_warm,
-                "q_hat": None,
-                "alpha_t": alpha_t,
-                "e_t": None,
-                "d_t": None,
-                "p_good": None,
-                "p_newbest": None,
-                "exploitation_mode": False,
-                "stop_counter": stop_counter,
-            })
-            continue
-
-        e_t = int(loss_t > U_warm)
-
-        alpha_old = alpha_t
-        alpha_t = alpha_t + gamma * (alpha - e_t)
-        alpha_t = float(np.clip(alpha_t, 1e-6, 1.0 - 1e-6))
-
-
-        d_t = abs(alpha_t - alpha_old)
-        alpha_changes.append(d_t)
-
-
-        if len(alpha_changes) >= stability_window:
-            recent_deltas = alpha_changes[-stability_window:]
-            exploitation_mode = all(d <= eps_stab for d in recent_deltas)
-        else:
-            exploitation_mode = False
-
-        q_hat = None
-        p_good = None
-        p_newbest = None
-        phase = "exploitation" if exploitation_mode else "exploration"
-
-        if exploitation_mode:
-            post_warmup_losses = losses_valid[warmup:]
-            post_warmup_flags = new_best_flags[warmup:]
-
-            if recent_window is not None:
-                window_losses = post_warmup_losses[-recent_window:]
-                window_flags = post_warmup_flags[-recent_window:]
-            else:
-                window_losses = post_warmup_losses
-                window_flags = post_warmup_flags
-
-            if len(window_losses) > 0:
-
-                q_hat = conformal_upper_quantile(window_losses, alpha)
-
-                p_good = float(np.mean([L <= U_warm for L in window_losses]))
-                p_newbest = float(np.mean(window_flags))
-
-                cond_good = p_good >= alpha_consistency
-                cond_rare = p_newbest <= alpha_rarity
-
-                if cond_good and cond_rare:
-                    stop_counter += 1
-                else:
-                    stop_counter = 0
-
-                if stop_counter >= k_stop:
-                    early_exit_trace.append({
-                        "trial": t,
-                        "loss": loss_t,
-                        "phase": phase,
-                        "U_warm": U_warm,
-                        "q_hat": q_hat,
-                        "alpha_t": alpha_t,
-                        "e_t": e_t,
-                        "d_t": d_t,
-                        "p_good": p_good,
-                        "p_newbest": p_newbest,
-                        "exploitation_mode": exploitation_mode,
-                        "stop_counter": stop_counter,
-                        "stopped": True,
-                    })
-                    break
+        # Equations (11)-(13): update ACI only after seeing the current loss.
+        e_t = int(loss_t > q_t)
+        alpha_t = float(np.clip(
+            alpha_t + config.gamma * (config.alpha - e_t), 1e-6, 1.0 - 1e-6
+        ))
+        q_delta = None if previous_q is None else abs(q_t - previous_q)
+        previous_q = q_t
+        if q_delta is not None:
+            q_changes.append(q_delta)
+        if (
+            len(losses_valid) > warmup + config.stability_window
+            and len(q_changes) >= config.stability_window
+            and max(q_changes[-config.stability_window:]) <= config.eps_stab
+        ):
+            # Freeze tau and m_stop before observing any post-trigger trial.
+            trigger_trial = t
 
         early_exit_trace.append({
             "trial": t,
             "loss": loss_t,
-            "phase": phase,
-            "U_warm": U_warm,
-            "q_hat": q_hat,
+            "phase": "exploitation_trigger" if trigger_trial is not None else "monitoring",
+            "q_hat": q_t,
             "alpha_t": alpha_t,
             "e_t": e_t,
-            "d_t": d_t,
-            "p_good": p_good,
-            "p_newbest": p_newbest,
-            "exploitation_mode": exploitation_mode,
-            "stop_counter": stop_counter,
+            "q_delta": q_delta,
+            "trigger_trial": trigger_trial,
+            "post_trigger_trials": 0,
             "stopped": False,
         })
 
@@ -729,12 +638,17 @@ def _tpe_search_early_exit(
 
     sampler_settings = {
         "sampler": "Optuna TPESampler",
-        "multivariate": bool(optuna_multivariate),
-        "group": bool(optuna_group),
+        "multivariate": bool(config.optuna_multivariate),
+        "group": bool(config.optuna_group),
         "n_startup_trials": n_startup_trials,
         "conformal_warmup": warmup,
-        "warn_independent_sampling": bool(optuna_warn_independent_sampling),
-        "seed": seed,
+        "warn_independent_sampling": bool(config.optuna_warn_independent_sampling),
+        "seed": config.seed,
+        "alpha_stop": config.alpha_stop,
+        "m_stop": m_stop,
+        "trigger_trial": trigger_trial,
+        "post_trigger_trials": post_trigger_trials,
+        "stop_reason": stop_reason,
     }
 
     return {

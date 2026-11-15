@@ -50,6 +50,7 @@ CONFIG = {
     "convex_min_blocks": 2,
     # Weak blocks are still added; stop after this many consecutive weak blocks.
     "convex_block_patience": 2,
+    "convex_alpha_stop": 0.05,
     "convex_optuna_multivariate": True,
     "convex_optuna_group": True,
 
@@ -78,7 +79,6 @@ CONFIG = {
         "convex_max_blocks": {"low": 100, "high": 100},
         "convex_max_evals": {"low": 100, "high": 100},
         "convex_warmup": {"low": 4, "high": 4},
-        "convex_k_stop": {"low": 3, "high": 3},
     },
 
     # Leave as None for the full grid. Set to e.g. 1 or 2 for a smoke test.

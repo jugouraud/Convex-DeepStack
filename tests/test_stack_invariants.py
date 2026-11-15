@@ -14,7 +14,7 @@ class FixedResidual(nn.Module):
 def test_invalid_search_budgets_are_rejected():
     for overrides in (
         {"max_blocks": None}, {"max_blocks": 1}, {"max_evals": 0},
-        {"nu": 0}, {"nu": 1.1}, {"recent_window": 0},
+        {"nu": 0}, {"nu": 1.1}, {"alpha_stop": 0},
         {"optuna_group": True, "optuna_multivariate": False},
     ):
         with pytest.raises(ValueError):
