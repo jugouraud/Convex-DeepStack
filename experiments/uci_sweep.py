@@ -17,6 +17,15 @@ def run_uci_sweep(config: dict, report_progress) -> tuple[pd.DataFrame, pd.DataF
     for dataset, seed in grid:
         data = run_uci_data(dataset, int(seed), config)
         for model_name in config["models_to_run"]:
+            report_progress({
+                "state": "running",
+                "event": "study_started",
+                "dataset": data["dataset_key"],
+                "model": model_name,
+                "completed_trials": completed,
+                "total_trials": total_trials,
+            })
+
             def after_trial(row):
                 nonlocal completed
                 completed += 1
@@ -26,6 +35,8 @@ def run_uci_sweep(config: dict, report_progress) -> tuple[pd.DataFrame, pd.DataF
                     "model": model_name,
                     "trial": int(row["trial_number"]) + 1,
                     "outcome": row["status"],
+                    "training_seconds": float(row["training_seconds"]),
+                    "objective_value": row["objective_value"],
                     "completed_trials": completed,
                     "total_trials": total_trials,
                 })

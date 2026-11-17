@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "generated": "2026-11-15",
+  "source_counts": {
+    "CORE": 120,
+    "FE": 322,
+    "BE": 426
+  },
+  "active_count": 841,
+  "aliased_count": 27,
+  "sha256_source": {
+    "CORE": "f4f03f8499ebaad66dfd07d160d4657185c77de88aedabe35463506e78625cbb",
+    "FE": "d030e97a4f2862366ee2b96eb43dec4dd76e9e7fdd2f6790343912d2edaf8959",
+    "BE": "2e6a38f100ad16444cfd9434df0fd2e98aaba3719e37231e39f7d74b871e5cb5",
+    "PERF": "ff8cd815bb462476e661811152d8a23b2c9b496c9cec6bd178e791ac0ccb87ee"
+  },
+  "performance_source_sections": 11
+}

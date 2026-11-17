@@ -1,0 +1,2 @@
+Generated 110 files, 446,253 bytes.
+OK: 868 source rules mapped; 841 canonical active; 27 aliases; 11 performance sections; 3 Codex skills.

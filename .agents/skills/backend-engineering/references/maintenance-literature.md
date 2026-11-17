@@ -1,0 +1,78 @@
+# backend-engineering references, bibliography and maintenance only
+
+### Authoritative reference anchors (maintenance only; not required reading for routine edits)
+
+The sources below inform rule construction but never override adopted obligations, project-specific contracts, or current normative standards. Version references reflect verification on **2026-11-15** and must be rechecked during future policy updates. RFCs, specifications, laws, and formally adopted requirements have a different status from books, vendor architecture suggestions, and influential research. Not every cited specification is applicable to every system. Check normative errata and protocol profiles before relying on details.
+
+- **HTTP and API contracts (API/NET/RPC):** [HTTP Semantics, RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html); [HTTP Caching, RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html); [Problem Details, RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) (supersedes RFC 7807); [OpenAPI Specification](https://spec.openapis.org/oas/) (3.2.1 published September 2026; use the version supported by project tooling); [GraphQL Specification](https://spec.graphql.org/); [gRPC guides](https://grpc.io/docs/); [CloudEvents](https://cloudevents.io/).
+- **Application security and identity (AUTH/SEC/CRYPTO):** [OWASP ASVS](https://asvs.owasp.org/) (stable 5.0.0 published May 2025); [OWASP Cheat Sheet Series](https://cheatsheetseries.owasp.org/); [OAuth 2.0 Security Best Current Practice, RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.html) (January 2025; updates earlier OAuth advice); [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html); [NIST SP 800-63-4 Digital Identity Guidelines](https://csrc.nist.gov/pubs/sp/800/63/4/final) (final July 2025); [MITRE CWE](https://cwe.mitre.org/).
+- **Software/supply-chain security (BUILD/SEC/CONFIG):** [NIST SP 800-218 SSDF v1.1](https://csrc.nist.gov/pubs/sp/800/218/final) (final; revision 1/v1.2 was draft as of this document); [SLSA v1.2 specification](https://slsa.dev/spec/v1.2/) (approved); [OWASP Software Supply Chain Security](https://owasp.org/www-project-software-supply-chain-security/); [NIST Cryptographic Standards and Guidelines](https://csrc.nist.gov/projects/cryptographic-standards-and-guidelines).
+- **Data and database semantics (DATA/SQL/TXN/MIG):** [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html) and [EXPLAIN](https://www.postgresql.org/docs/current/using-explain.html) (engine-specific exemplars, not universal SQL rules); [SQL standard information via ISO](https://www.iso.org/committee/45342.html); adopted datastore documentation for transactions, isolation, indexing, consistency, backups, replication, and schema locks.
+- **Runtime, cloud, and operations (RUNTIME/INFRA/DEPLOY):** [The Twelve-Factor App](https://12factor.net/) (influential methodology, not a universal rule); [Kubernetes documentation](https://kubernetes.io/docs/) when used; [AWS Builders' Library — timeouts, retries, backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) (vendor experience, not a protocol requirement).
+- **Reliability/observability/delivery (SRE/OBS/CAP/DR):** [Google Site Reliability Engineering](https://sre.google/sre-book/table-of-contents/); [Google SRE Workbook](https://sre.google/workbook/table-of-contents/); [OpenTelemetry specifications](https://opentelemetry.io/docs/specs/); [DORA Research](https://dora.dev/research/) (delivery measurement perspectives, not mandatory scoring or blanket targets); [Jepsen analyses](https://jepsen.io/analyses) (system-specific fault/consistency evidence).
+- **Data protection (PRIV/DR):** Applicable jurisdictional statutes and official regulator guidance; for EU/EEA obligations see the [GDPR regulation text](https://eur-lex.europa.eu/eli/reg/2016/679/oj). Determine territorial applicability, lawful purpose, retention and rights with authorized owners; this technical policy is not legal advice.
+
+### Seminal works and engineering literature (non-normative; annotated canon)
+
+**Foundational shortlist — read deeply before inventing system architecture.** The first eight span maintainability, modularity, domain thinking, data, failures, production, testing, and measurement; they deliberately offer **different** perspectives. Treat their advice as hypotheses to test against the current system.
+
+1. **John Ousterhout — *A Philosophy of Software Design* (2018; revised edition).** Deep modules, information hiding, reducing complexity, avoiding shallow wrappers. **Extract into:** `CODE`, `ARCH`, `WORK`.
+2. **Martin Fowler — *Refactoring* (2nd ed., 2018).** Behavior-preserving increments, refactoring discipline, testable diffs. **Extract into:** `WORK`, `CODE`, `TEST`, `MIG`.
+3. **Eric Evans — *Domain-Driven Design* (2003).** Ubiquitous language, bounded contexts, aggregates, invariants, domain modeling. **Extract into:** `DOMAIN`, `ARCH`, `TXN`.
+4. **Martin Kleppmann & Chris Riccomini — *Designing Data-Intensive Applications* (2nd ed., 2026).** Storage models, transactions, consistency, replication, fault-tolerance, analytical/data-system trade-offs. **Extract into:** `DATA`, `SQL`, `TXN`, `DIST`, `MSG`, `ARCH`.
+5. **Michael T. Nygard — *Release It!* (2nd ed., 2018).** Stability antipatterns, failure containment, capacity and production resilience. **Extract into:** `FAIL`, `CAP`, `DEPLOY`, `SRE`.
+6. **Betsy Beyer, Chris Jones, Jennifer Petoff & Niall Richard Murphy (eds.) — *Site Reliability Engineering* (2016) and *The Site Reliability Workbook* (2018).** SLOs/error budgets, toil, overload, monitoring, response, postmortems. **Extract into:** `SRE`, `OBS`, `CAP`, `DR`.
+7. **Brendan Gregg — *Systems Performance* (2nd ed., 2020).** Scientific performance analysis, profiling, queueing, CPU/memory/IO and kernel-level bottlenecks. **Extract into:** `PERF`, `CAP`, `RUNTIME`, `SQL`.
+8. **Gerard Meszaros — *xUnit Test Patterns* (2007); Kent Beck — *Test-Driven Development: By Example* (2002).** Reliable tests, fixtures, smells, feedback loops; neither mandates unit tests for every line. **Extract into:** `TEST`, `WORK`.
+
+**Software structure, design, and delivery**
+
+- **Robert C. Martin — *Clean Architecture* (2017), *Clean Code* (2008):** dependency boundaries, readability and testability as useful perspectives; avoid adopting rigid layer counts, subjective function-size mandates, or abstraction ceremony. `CODE`, `ARCH`, `TEST`.
+- **Martin Fowler — *Patterns of Enterprise Application Architecture* (2002):** data mapper, transaction script, unit of work, identity map, and enterprise integration choices; compare patterns rather than stacking all of them. `ARCH`, `DATA`, `SQL`, `TXN`.
+- **David Farley & Jez Humble — *Continuous Delivery* (2010); Dave Farley — *Modern Software Engineering* (2021):** fast feedback, deployability, experiment/measurement, automated verification. `WORK`, `BUILD`, `DEPLOY`, `TEST`.
+- **Titus Winters, Tom Manshreck & Hyrum Wright (eds.) — *Software Engineering at Google* (2020):** sustainable code, change scale, testing, version/dependency practices, organizational costs. `WORK`, `CODE`, `BUILD`, `DOC`.
+- **Mark Richards & Neal Ford — *Fundamentals of Software Architecture* (2020); Len Bass, Paul Clements & Rick Kazman — *Software Architecture in Practice* (4th ed., 2021):** architecture characteristics, trade-off analysis, quality scenarios. `ARCH`, `DOC`, `SRE`.
+- **Sam Newman — *Building Microservices* (2nd ed., 2021) and *Monolith to Microservices* (2019):** decomposition, integration, data ownership, deployment/operations cost; **not** a mandate to split services. `ARCH`, `DIST`, `DEPLOY`.
+- **Vaughn Vernon — *Implementing Domain-Driven Design* (2013):** tactical domain modeling, aggregate boundaries, integration patterns. `DOMAIN`, `TXN`, `ARCH`.
+- **Michael Feathers — *Working Effectively with Legacy Code* (2004):** characterization tests, seams, safe incremental change in unfamiliar systems. `WORK`, `CODE`, `TEST`.
+- **Nicole Forsgren, Jez Humble & Gene Kim — *Accelerate* (2018):** empirical delivery performance and organizational practices; use research as diagnostic context, not a universal KPI quota. `DEPLOY`, `SRE`, `DOC`.
+
+**Databases, distributed computing, and concurrency**
+
+- **Jim Gray & Andreas Reuter — *Transaction Processing: Concepts and Techniques* (1992); Philip A. Bernstein & Eric Newcomer — *Principles of Transaction Processing* (2nd ed., 2009):** transactional correctness, recoverability, concurrency control, and distributed transaction trade-offs. `TXN`, `SQL`, `DR`.
+- **Alex Petrov — *Database Internals* (2019):** storage engine structures, B-trees/LSM trees, database architecture and replication. `SQL`, `DATA`, `PERF`.
+- **Bill Karwin — *SQL Antipatterns* (2010); Markus Winand — *SQL Performance Explained* (2012):** practical schema/query failure patterns and indexing/SQL execution. `SQL`, `MIG`, `PERF`.
+- **Leslie Lamport — “Time, Clocks, and the Ordering of Events in a Distributed System” (1978):** happens-before and the limits of physical clock order. [Primary paper](https://lamport.org/pubs/time-clocks.pdf). `DIST`, `I18N`.
+- **Leslie Lamport — “Paxos Made Simple” (2001) and Diego Ongaro & John Ousterhout — “In Search of an Understandable Consensus Algorithm (Raft)” (2014):** reasoning about consensus and leader changes; use maintained systems instead of hand-rolling an implementation. [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf); [Raft](https://raft.github.io/raft.pdf). `DIST`.
+- **Giuseppe DeCandia et al. — “Dynamo: Amazon's Highly Available Key-value Store” (2007):** availability/consistency trade-offs, versions and application conflict resolution. [ACM paper](https://doi.org/10.1145/1294261.1294281). `DIST`, `DATA`, `CACHE`.
+- **Jeffrey Dean & Sanjay Ghemawat — “MapReduce: Simplified Data Processing on Large Clusters” (2004); Fay Chang et al. — “Bigtable: A Distributed Storage System for Structured Data” (2006/2008):** partitioned batch processing and storage architecture case studies. [MapReduce](https://research.google/pubs/mapreduce-simplified-data-processing-on-large-clusters/); [Bigtable](https://doi.org/10.1145/1365815.1365816). `DATA`, `JOB`, `DIST`.
+- **James C. Corbett et al. — “Spanner: Google's Globally-Distributed Database” (2012):** global transactions and the explicit engineering costs of externally consistent distributed storage. [Google paper](https://research.google/pubs/spanner-googles-globally-distributed-database/). `DIST`, `TXN`.
+- **Pat Helland — “Life beyond Distributed Transactions: an Apostate's Opinion” (2007):** lessons about scale, messaging, and the limitations of global transactional assumptions; perspective, not a universal prohibition of distributed transactions. `DIST`, `TXN`, `MSG`.
+- **Maurice Herlihy & Nir Shavit — *The Art of Multiprocessor Programming* (2008; revised edition):** correctness under concurrent execution, linearizability, synchronization trade-offs. `RUNTIME`, `DIST`, `TXN`.
+- **Kyle Kingsbury/Jepsen — distributed consistency testing reports:** concrete evidence of partitions, stale reads, lost updates, and product-specific anomalies; testing approaches transfer, product conclusions do not automatically generalize. [Jepsen](https://jepsen.io/analyses). `DIST`, `TEST`.
+
+**Production, security, and operational craft**
+
+- **Andrew S. Tanenbaum & Herbert Bos — *Modern Operating Systems*; W. Richard Stevens et al. — *UNIX Network Programming*:** processes, sockets, kernel/resource limits, OS networking; reconcile details with supported modern systems. `RUNTIME`, `NET`, `CAP`.
+- **Ilya Grigorik — *High Performance Browser Networking* (2013):** network latency, TCP/TLS/HTTP mechanics that also affect backend APIs and proxies; use newer protocol documents for current specifics. `NET`, `API`, `PERF`.
+- **Chris Richardson — *Microservices Patterns* (2018):** transactional outbox, saga, and API-composition patterns; useful only when service decomposition produces those problems. `ARCH`, `TXN`, `MSG`.
+- **Charity Majors, Liz Fong-Jones & George Miranda — *Observability Engineering* (2022):** query-driven observability, high-cardinality trade-offs, diagnosing unknown failures. `OBS`, `SRE`.
+- **Ross Anderson — *Security Engineering* (3rd ed., 2020):** security as systems design, threat models, incentives and failure modes. [Author site](https://www.cl.cam.ac.uk/~rja14/book.html). `SEC`, `AUTH`, `CRYPTO`, `PRIV`.
+- **Jerome H. Saltzer & Michael D. Schroeder — “The Protection of Information in Computer Systems” (1975):** least privilege, complete mediation, defense in depth and other foundational security-design principles. `AUTH`, `SEC`, `INFRA`.
+- **NIST SSDF and OWASP ASVS:** operational security-checklist complements to conceptual books; use the applicable, *current* versions and verification requirements. `SEC`, `BUILD`, `AUTH`, `TEST`.
+- **The Twelve-Factor App (Adam Wiggins, 2011):** environment config, backing services, disposability, build/release/run separation; context-dependent for modern serverless, managed-state and hybrid deployment. `CONFIG`, `RUNTIME`, `DEPLOY`.
+- **AWS Builders' Library — “Timeouts, Retries, and Backoff with Jitter” (2019):** practical retry amplification, deadline design, bounded recovery, and idempotency. `FAIL`, `API`, `CAP`, `JOB`.
+
+### Literature-to-rule extraction protocol (maintenance; DOC3/DOC8)
+
+1. **Classify the source.** Normative specification, verified platform documentation, empirical study, field experience, design-pattern catalog, or personal opinion. Record publication/version and applicability.
+2. **Extract the failure mode and invariant.** Ask: what exact fault does the advice prevent, under which workload/threat/consistency assumptions, and what does an observer see if it is violated?
+3. **Test counterexamples and alternatives.** Compare a minimal implementation, existing repository convention, and the cited pattern. Do not elevate a pattern to M solely because it appears in a famous book.
+4. **Write one enforceable conditional rule.** A stable ID, M/S, narrow trigger, explicit forbidden failure or required outcome, and suitable verification evidence. Avoid technology mandates without conditions.
+5. **Cross-check the current authority.** Protocol and security advice may have been superseded. Reconcile vendor/database specifics and current project requirements before incorporating them.
+6. **Deduplicate and route.** Prefer one principal owner section plus cross-references; keep `WORK` + `CODE` always-on and other themes lazily loaded for token efficiency.
+7. **Validate with realistic patches.** Try low-risk, concurrency-sensitive, auth-sensitive, schema-migration, hot-path, and production-release examples. Revise overstrict or unenforceable guidance; document exceptions.
+
+### Scope and maintenance note
+
+This document states **what an agent must preserve, constrain, and verify**, not a universal language, framework, ORM, architecture, database, queue, cloud, folder hierarchy, container platform, or numerical SLO. Team-specific profiles may add exact datastore semantics, supported runtime versions, latency/availability targets, schemas, commands, infrastructure controls, regulatory requirements, and production approval procedures. Such profiles may strengthen these rules but cannot silently waive applicable security, privacy, correctness, data-integrity, or legal obligations. Review this policy periodically, preserve exception records and historical decisions, and prefer measurable learning over ritual compliance.

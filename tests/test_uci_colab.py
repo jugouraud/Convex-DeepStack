@@ -40,11 +40,13 @@ def test_archive_rejects_parent_directory_escape(tmp_path):
     assert not (tmp_path.parent / "outside.txt").exists()
 
 
-def test_submit_download_and_stop_even_on_remote_error(monkeypatch, tmp_path):
+@pytest.mark.parametrize("high_mem", [False, True])
+def test_submit_download_and_stop_even_on_remote_error(monkeypatch, tmp_path, high_mem):
     monkeypatch.setattr(launcher, "REPO", tmp_path)
     monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/colab")
     config = tmp_path / "config.toml"
-    config.write_text('[colab]\nsession="test-uci"\noutput_dir="outputs/uci"\n')
+    config.write_text('[colab]\nsession="test-uci"\noutput_dir="outputs/uci"\n'
+                      f'high_mem={str(high_mem).lower()}\n')
     commands = []
 
     def fake_call(command, *, timeout=600):
@@ -66,6 +68,7 @@ def test_submit_download_and_stop_even_on_remote_error(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "_execute_and_monitor", lambda *a, **kw: None)
     launcher.run_colab(config)
     assert [cmd[1] for cmd in commands] == ["new", "upload", "download", "stop"]
+    assert ("--high-mem" in commands[0]) is high_mem
     assert (tmp_path / "outputs/uci/manifest.json").exists()
     assert not (tmp_path / "outputs/uci/status.json").exists()
 
@@ -80,3 +83,34 @@ def test_submit_download_and_stop_even_on_remote_error(monkeypatch, tmp_path):
     assert [cmd[1] for cmd in commands] == ["new", "upload", "stop"]
     status = json.loads((tmp_path / "outputs/uci/status.json").read_text())
     assert status["state"] == "failed"
+
+
+def test_high_memory_rejects_string_before_provisioning(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/colab")
+    config = tmp_path / "config.toml"
+    config.write_text('[colab]\nhigh_mem="true"\n')
+    with pytest.raises(ValueError, match="high_mem must be a boolean"):
+        launcher.run_colab(config)
+
+
+def test_package_only_includes_current_sources_without_cli(monkeypatch, tmp_path):
+    import sys
+
+    destination = tmp_path / "package"
+    monkeypatch.setattr(
+        sys, "argv", ["run_uci_colab.py", "--package-only", str(destination)]
+    )
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
+    launcher.main()
+    with ZipFile(destination / "source.zip") as bundle:
+        assert bundle.testzip() is None
+        assert bundle.read("config.toml") == (
+            launcher.REPO / "experiments/config.toml"
+        ).read_bytes()
+        assert "src/convex_deepstack/models.py" in bundle.namelist()
+        assert "experiments/uci_runner.py" in bundle.namelist()
+        assert not any(name.startswith(("outputs/", ".venv/", ".git/"))
+                       for name in bundle.namelist())
+    assert (destination / "uci_colab_remote.py").read_bytes() == (
+        launcher.REPO / "scripts/uci_colab_remote.py"
+    ).read_bytes()

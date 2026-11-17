@@ -21,6 +21,8 @@ subprocess.run(
     timeout=900,
 )
 sys.path.insert(0, str(PROJECT))
+# The running notebook kernel does not reload pip's new editable-install .pth file.
+sys.path.insert(0, str(PROJECT / "src"))
 
 from experiments.uci_runner import run_uci_experiment  # noqa: E402
 

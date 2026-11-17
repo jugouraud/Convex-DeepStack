@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
 
 try:
@@ -127,7 +128,24 @@ def run_uci_experiment(config_path: str | Path, output_dir: str | Path) -> None:
     initialize_environment(seed=int(config["sweep_seeds"][0]))
 
     def progress(event):
+        """Emit both launcher-readable and concise human progress output."""
         print(PROGRESS_PREFIX + json.dumps(event, separators=(",", ":")), flush=True)
+        if event.get("state") == "completed":
+            print("UCI experiment complete.", flush=True)
+        elif event.get("event") == "study_started":
+            print(
+                f"[{event['completed_trials']}/{event['total_trials']}] start "
+                f"dataset={event['dataset']} model={event['model']}",
+                flush=True,
+            )
+        elif "trial" in event:
+            print(
+                f"[{event['completed_trials']}/{event['total_trials']}] "
+                f"{event['outcome']} dataset={event['dataset']} model={event['model']} "
+                f"trial={event['trial']} training_seconds={event.get('training_seconds'):.2f} "
+                f"objective={event.get('objective_value')}",
+                flush=True,
+            )
 
     progress({"state": "running", "completed_trials": 0,
               "total_trials": len(config["uci_datasets"]) * len(config["sweep_seeds"]) *
@@ -154,6 +172,16 @@ def run_uci_experiment(config_path: str | Path, output_dir: str | Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run UCI studies locally (no Colab)")
     parser.add_argument("--config", default="experiments/config.toml")
-    parser.add_argument("--output-dir", default="outputs/uci")
+    parser.add_argument(
+        "--output-dir",
+        help="Override the config output directory; use a new directory to avoid overwrites.",
+    )
     arguments = parser.parse_args()
-    run_uci_experiment(arguments.config, arguments.output_dir)
+    if arguments.output_dir is None:
+        with Path(arguments.config).open("rb") as handle:
+            arguments.output_dir = tomllib.load(handle)["colab"]["output_dir"]
+    # Solvers and Optuna can emit thousands of repeated warnings during a sweep.
+    # Exceptions and tracebacks remain visible to the terminal.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        run_uci_experiment(arguments.config, arguments.output_dir)

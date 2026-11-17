@@ -93,7 +93,7 @@ def _execute_and_monitor(args: list[str], status: Path, *, session: str, timeout
 
 
 def _build_archive(archive: Path, config_path: Path) -> None:
-    """Stage only tracked source types needed for the remote run (never credentials)."""
+    """Stage current source files needed for the remote run (never credentials)."""
     paths = [REPO / "README.md", REPO / "LICENSE", REPO / "pyproject.toml"]
     paths.extend((REPO / "src" / "convex_deepstack").glob("*.py"))
     paths.extend((REPO / "experiments").glob("*.py"))
@@ -144,8 +144,11 @@ def run_colab(config_path: Path) -> None:
 
     with config_path.open("rb") as handle:
         settings = tomllib.load(handle)["colab"]
-    if set(settings) - {"session", "gpu", "output_dir", "execution_timeout_seconds"}:
+    if set(settings) - {"session", "gpu", "high_mem", "output_dir", "execution_timeout_seconds"}:
         raise ValueError("Unknown Colab settings")
+    high_mem = settings.get("high_mem", False)
+    if type(high_mem) is not bool:
+        raise ValueError("Colab high_mem must be a boolean")
     session = settings["session"]
     if not isinstance(session, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,39}", session) is None:
         raise ValueError("Invalid Colab session name")
@@ -174,6 +177,8 @@ def run_colab(config_path: Path) -> None:
             command = ["colab", "new", "-s", session]
             if gpu:
                 command.extend(["--gpu", gpu])
+            if high_mem:
+                command.append("--high-mem")
             try:
                 _call(command, timeout=600)
             except subprocess.TimeoutExpired:
@@ -209,7 +214,16 @@ def run_colab(config_path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Submit the UCI sweep to Google Colab")
     parser.add_argument("--config", type=Path, default=REPO / "experiments/config.toml")
+    parser.add_argument("--package-only", type=Path, metavar="DIRECTORY",
+                        help="Write source.zip and the remote runner without contacting Colab")
     args = parser.parse_args()
+    if args.package_only is not None:
+        args.package_only.mkdir(parents=True, exist_ok=True)
+        _build_archive(args.package_only / "source.zip", args.config.resolve())
+        shutil.copy2(REPO / "scripts/uci_colab_remote.py",
+                     args.package_only / "uci_colab_remote.py")
+        print(f"Colab package written to {args.package_only.resolve()}")
+        return
     run_colab(args.config.resolve())
 
 

@@ -42,9 +42,9 @@ def test_uci_config_rejects_unbounded_trials_and_split_leakage(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(valid, encoding="utf-8")
     loaded = load_uci_config(path, tmp_path)
-    assert loaded["n_trials"]["SCNN"] == 100
+    assert loaded["n_trials"]["Convex DeepStack"] == 1
     assert loaded["group_columns"] == ["dataset", "uci_id", "target", "seed", "Model"]
-    path.write_text(valid.replace('SCNN = 100', 'SCNN = 100001'))
+    path.write_text(valid.replace('"Convex DeepStack" = 1', '"Convex DeepStack" = 100001'))
     with pytest.raises(ValueError, match="trial count"):
         load_uci_config(path, tmp_path)
     path.write_text(valid.replace("val_fraction = 0.20", "val_fraction = 0.50"))

@@ -1,7 +1,7 @@
-# Edit this file, then run: python scripts/run_uci_colab.py --config experiments/config.toml
+# Local CPU run: python -m experiments.uci_runner --config experiments/config.toml
 [experiment]
 sweep_seeds = [42]
-models_to_run = ["Convex DeepStack", "SCNN", "ResNet"]
+models_to_run = ["Convex DeepStack", "SCNN", "WaDiRo-SCNN", "ResNet"]
 train_fraction = 0.60
 val_fraction = 0.20
 test_fraction = 0.20
@@ -18,8 +18,9 @@ checkpoint_after_each_study = true
 
 [trials]
 "Convex DeepStack" = 1
-SCNN = 100
-ResNet = 100
+"SCNN" = 1
+"WaDiRo-SCNN" = 1
+"ResNet" = 1
 
 # UCI IDs and optional row caps follow the Drive notebooks.
 # With multiple targets, target_column defaults to the first UCI target.
@@ -27,6 +28,11 @@ ResNet = 100
 key = "appliances_energy"
 id = 374
 max_rows = 5000
+
+[[datasets]]
+key = "bike_sharing"
+id = 275
+max_rows = 10000
 
 # Search spaces retain the repository's synthetic benchmark conventions.
 [search_space.resnet_layers]
@@ -53,5 +59,6 @@ resnet_batch_size = [32, 64, 128]
 [colab]
 session = "cds-uci"
 gpu = ""  # SCNN/convex solvers run on CPU; use "T4" for ResNet-heavy runs if desired.
-output_dir = "outputs/uci"
+high_mem = true  # Request Colab high system RAM; allocation depends on entitlement/availability.
+output_dir = "outputs/uci_appliances_bike_cds"
 execution_timeout_seconds = 86400

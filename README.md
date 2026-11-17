@@ -104,11 +104,12 @@ The main experiment files are:
 The UCI sweep follows the project's existing Optuna/TPE training pipeline and the
 Drive notebooks: a deterministic 60/20/20 train/validation/test split, preprocessing
 fitted only on training data, selection by validation MinMax-normalised MSE, and
-original-unit validation/test metrics. The default TOML config includes Concrete
-Compressive Strength (UCI 165), Energy Efficiency (242, first target), and Wine
-Quality (186, capped at 1,599 sampled observations). Edit
+original-unit validation/test metrics. The default TOML config includes Appliances
+Energy (UCI 374, capped at 5,000 rows) and Bike Sharing (275, capped at 10,000 rows),
+with seed 42 and one trial each for Convex DeepStack, SCNN, WaDiRo-SCNN, and ResNet
+(eight outer trials total; CDS performs additional internal block searches). Edit
 `experiments/config.toml` to select datasets, models, trial counts, search
-spaces, and Colab hardware. Results are saved to `outputs/uci/`.
+spaces, and Colab hardware. Results are saved to the configured `colab.output_dir`.
 
 Run without Colab:
 
@@ -116,9 +117,9 @@ Run without Colab:
 python -m experiments.uci_runner --config experiments/config.toml
 ```
 
-On Windows, the UCI configuration excludes the direct WaDiRo-SCNN baseline and
-ConvexDeepStack searches SCNN residual blocks only. This avoids a native CVXPY
-extension abort observed in WaDiRo-SCNN; run Linux or Colab for WaDiRo studies.
+Use Linux or Colab for this full sweep: a native CVXPY extension abort was
+observed with WaDiRo-SCNN on Windows. ConvexDeepStack searches SCNN residual
+blocks only on Windows.
 
 For remote execution, install and authenticate Google's official CLI on Linux or
 macOS (`pip install google-colab-cli`, then follow `colab` authentication prompts).
@@ -129,12 +130,60 @@ sweep, downloads CSVs/figures/manifest, and stops the session:
 python scripts/run_uci_colab.py --config experiments/config.toml
 ```
 
-While running, `outputs/uci/status.json` is updated atomically after each trial;
+The default `high_mem = true` requests high system RAM with `colab new --high-mem`;
+`gpu = ""` keeps the convex solver workload on CPU. Set `gpu = "T4"` if desired
+for ResNet. High RAM requires an eligible Colab account and available capacity;
+it does not guarantee that a solver will fit. WSL only drives the CLI: training
+and dependency installation happen remotely.
+
+To package without authentication, training dependencies, or allocating a runtime
+(Python 3.10+), run:
+
+```bash
+python scripts/run_uci_colab.py --package-only outputs/uci_colab_package
+```
+
+This snapshots current working-tree sources and the selected config, excluding
+local data, outputs, environments, and credentials. Dependencies are declared in
+`pyproject.toml` and installed remotely; versions are not locked by this package.
+From the generated package directory on a Linux/macOS CLI host:
+
+```bash
+colab new --help  # Verify this installed version supports --high-mem.
+colab new -s cds-uci --high-mem
+colab status -s cds-uci
+colab upload -s cds-uci source.zip /content/cds_uci_source.zip
+colab exec -s cds-uci -f uci_colab_remote.py
+colab download -s cds-uci /content/cds_uci_results.zip results.zip
+python -m zipfile -t results.zip
+colab stop -s cds-uci
+```
+
+Download and inspect results before stopping. If execution fails, inspect the
+session and retrieve any partial files from `/content/cds_uci_job/outputs/uci/`
+before stopping it; the result ZIP is created only after successful completion.
+
+While using the automatic launcher, `<colab.output_dir>/status.json` is updated after each trial;
 it is removed after a successful download and retained with failure status on
 errors. Remote runs require network access to UCI datasets and Python packages.
 Run `pytest -q tests/test_uci_pipeline.py tests/test_uci_colab.py` for the
 focused offline checks. If cleanup fails, status remains `cleanup_required` and
 the named Colab session must be stopped manually.
+
+### Full synthetic CDS experiment
+
+Run Convex DeepStack only over every configured synthetic function, dimension,
+samples-per-dimension setting, seed, and corruption level:
+
+```bash
+python -m experiments.cds_synthetic_runner --output-dir outputs/cds_synthetic
+```
+
+The terminal prints one start/completion line per grid point. The output directory
+contains `cds_synthetic_results.json` (final metrics and training time) and
+`cds_synthetic_model_compositions.json` (selected trial settings, accepted-block
+weights/types, and stopping history). Both files are atomically checkpointed after
+each completed grid point.
 
 ## Upstream dependency
 
